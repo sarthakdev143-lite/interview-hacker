@@ -1,6 +1,5 @@
 import {
   app,
-  dialog,
   globalShortcut,
   ipcMain,
   shell,
@@ -20,6 +19,23 @@ import type {
 } from './types/contracts';
 import { WindowManager } from './windowManager';
 
+let windowManager: WindowManager;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (windowManager?.dashboardWindow) {
+      if (windowManager.dashboardWindow.isMinimized()) {
+        windowManager.dashboardWindow.restore();
+      }
+      windowManager.dashboardWindow.focus();
+    }
+  });
+}
+
 let isShuttingDown = false;
 
 const userDataPath = app.getPath('userData');
@@ -27,7 +43,7 @@ const historyPath = path.join(userDataPath, 'history');
 const logPath = path.join(userDataPath, 'wingman.log');
 const preloadPath = path.join(__dirname, '../preload/preload.js');
 const secureStore = new SecureStore(userDataPath);
-const windowManager = new WindowManager(preloadPath);
+windowManager = new WindowManager(preloadPath);
 let serverStartPromise: Promise<void> | null = null;
 let serverRestartTimeout: NodeJS.Timeout | null = null;
 
@@ -188,7 +204,7 @@ function registerShortcuts() {
     },
   );
 
-  registerShortcut('focus manual input', ['CommandOrControl+Shift+F'], () => {
+  registerShortcut('focus manual input', ['CommandOrControl+Shift+Space'], () => {
     windowManager.focusOverlayInput();
   });
 }
@@ -348,7 +364,7 @@ async function createApp() {
   });
 }
 
-async function shutdownAndQuit() {
+async function shutdownAndQuit(exitCode = 0) {
   if (isShuttingDown) {
     return;
   }
@@ -362,7 +378,7 @@ async function shutdownAndQuit() {
     await pythonServer.shutdown();
   } finally {
     globalShortcut.unregisterAll();
-    app.exit();
+    app.exit(exitCode);
   }
 }
 
@@ -370,17 +386,50 @@ app.whenReady().then(async () => {
   try {
     await createApp();
   } catch (error) {
-    console.error(error);
+    console.error('[wingman] Fatal startup error:', error);
     await logAppError('startup', error);
-    updateState({
-      sessionStatus: 'error',
-      error: error instanceof Error ? error.message : 'Failed to bootstrap WingMan.',
+
+    const message = error instanceof Error ? error.message : String(error);
+
+    try {
+      await fs.mkdir(app.getPath('userData'), { recursive: true });
+      await fs.writeFile(
+        logPath,
+        `[${new Date().toISOString()}] Fatal error:\n${formatError(error)}\n`,
+        'utf8',
+      );
+    } catch {
+      // Ignore log write failures in the startup error path.
+    }
+
+    const { BrowserWindow } = await import('electron');
+    const errWin = new BrowserWindow({
+      width: 580,
+      height: 280,
+      show: true,
+      resizable: false,
+      title: 'WingMan - Error',
+      backgroundColor: '#05070c',
+      webPreferences: { nodeIntegration: false },
     });
-    dialog.showErrorBox(
-      'WingMan failed to start',
-      `${error instanceof Error ? error.message : 'Failed to bootstrap WingMan.'}\n\nLogs: ${logPath}`,
+
+    const escapedMessage = message
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const escapedLogPath = logPath
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const html = `<!DOCTYPE html><html><body style="margin:0;padding:2rem;background:#05070c;font-family:system-ui,sans-serif;color:#f8fafc"><div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.5rem"><span style="font-size:2rem">Error</span><h2 style="margin:0;color:#fca5a5;font-size:1.25rem">WingMan failed to start</h2></div><p style="margin:0 0 1rem;color:#cbd5e1;font-size:0.875rem">${escapedMessage}</p><p style="margin:0;color:#64748b;font-size:0.8rem">Logs: ${escapedLogPath}</p><p style="margin:0.75rem 0 0;color:#64748b;font-size:0.8rem">Check that wingman-server.exe is not blocked by Windows Defender or antivirus.</p></body></html>`;
+
+    await errWin.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
     );
-    await shutdownAndQuit();
+
+    errWin.on('closed', () => {
+      void shutdownAndQuit(1);
+    });
   }
 });
 

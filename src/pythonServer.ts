@@ -1,11 +1,17 @@
-import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import {
+  execFile,
+  type ChildProcessWithoutNullStreams,
+  spawn,
+} from 'node:child_process';
 import { once } from 'node:events';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import type { HealthPayload } from './types/contracts';
 
 const PORT_PREFIX = 'PORT:';
+const execFileAsync = promisify(execFile);
 
 export interface PythonServerExitInfo {
   code: number | null;
@@ -32,6 +38,8 @@ export class PythonServerManager {
 
   private isExpectedShutdown = false;
 
+  private lastPortProbeAt = 0;
+
   async start(historyDir: string): Promise<HealthPayload> {
     if (this.child && this.port) {
       return this.getHealth();
@@ -41,6 +49,7 @@ export class PythonServerManager {
 
     const { command, args } = this.getSpawnTarget();
     this.isExpectedShutdown = false;
+    this.lastPortProbeAt = 0;
     this.child = spawn(command, args, {
       cwd: process.cwd(),
       env: {
@@ -88,6 +97,17 @@ export class PythonServerManager {
 
     const startedAt = Date.now();
     while (!this.port) {
+      if (this.isPackaged && this.child?.pid) {
+        const discoveredPort = await this.discoverPortFromProcess();
+        if (discoveredPort) {
+          this.port = discoveredPort;
+          console.log(
+            `[wingman-python] discovered port ${discoveredPort} from process lookup`,
+          );
+          break;
+        }
+      }
+
       if (Date.now() - startedAt > 20000) {
         throw new Error(
           `Python server did not report a port in time. ${stderrBuffer}`.trim(),
@@ -133,6 +153,61 @@ export class PythonServerManager {
     throw new Error('Python server failed to become healthy in time.');
   }
 
+  private async discoverPortFromProcess() {
+    const pid = this.child?.pid;
+    if (!pid) {
+      return null;
+    }
+
+    const now = Date.now();
+    if (now - this.lastPortProbeAt < 1000) {
+      return null;
+    }
+    this.lastPortProbeAt = now;
+
+    if (process.platform === 'win32') {
+      try {
+        const { stdout } = await execFileAsync(
+          'netstat',
+          ['-ano', '-p', 'tcp'],
+          {
+            windowsHide: true,
+          },
+        );
+
+        for (const line of stdout.split(/\r?\n/)) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length < 5) {
+            continue;
+          }
+
+          const [protocol, localAddress, , state, owningPid] = parts;
+          if (
+            protocol !== 'TCP' ||
+            state !== 'LISTENING' ||
+            owningPid !== String(pid)
+          ) {
+            continue;
+          }
+
+          const match = localAddress.match(/:(\d+)$/);
+          if (!match) {
+            continue;
+          }
+
+          const port = Number(match[1]);
+          if (Number.isFinite(port) && port > 0) {
+            return port;
+          }
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
   private getSpawnTarget() {
     if (process.env.WINGMAN_PYTHON_BIN) {
       return {
@@ -143,7 +218,12 @@ export class PythonServerManager {
 
     if (process.platform === 'win32') {
       if (this.isPackaged) {
-        const binary = path.join(process.resourcesPath, 'python', 'wingman-server.exe');
+        const binary = path.join(
+          process.resourcesPath,
+          'python',
+          'wingman-server',
+          'wingman-server.exe',
+        );
         return { command: binary, args: [] };
       }
 
@@ -154,7 +234,12 @@ export class PythonServerManager {
     }
 
     if (this.isPackaged) {
-      const binary = path.join(process.resourcesPath, 'python', 'wingman-server');
+      const binary = path.join(
+        process.resourcesPath,
+        'python',
+        'wingman-server',
+        'wingman-server',
+      );
       return { command: binary, args: [] };
     }
 

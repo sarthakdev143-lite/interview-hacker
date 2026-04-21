@@ -32,6 +32,9 @@ npm run dev
 ## Packaging
 
 ```bash
+# Install packaging dependencies for reproducible PyInstaller builds
+pip install -r python/requirements-pyinstaller.txt
+
 # Build the Electron app bundles
 npm run build
 
@@ -40,6 +43,8 @@ npm run package
 ```
 
 `npm run package` builds the Electron bundles, compiles the Python server into a sidecar executable with PyInstaller, and packages the desktop app with `electron-builder`.
+
+If Windows Defender quarantines `python/dist/wingman-server/wingman-server.exe`, add an exclusion for `python/dist/wingman-server/` and rerun `npm run package`.
 
 ## Notes
 

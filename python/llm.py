@@ -30,7 +30,7 @@ class LLMClient:
     def __init__(self, api_key: str):
         self.client = Groq(api_key=api_key)
         self.default_model = "llama-3.3-70b-versatile"
-        self.classifier_model = "llama-4-scout-17b-16e-instruct"
+        self.classifier_model = "meta-llama/llama-4-scout-17b-16e-instruct"
 
     def is_question(self, transcript: str) -> bool:
         if not transcript.strip():

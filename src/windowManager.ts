@@ -73,10 +73,20 @@ export class WindowManager {
       this.overlayWindow = null;
     });
 
+    const dashboardReadyToShow = new Promise<void>((resolve) => {
+      this.dashboardWindow!.once('ready-to-show', resolve);
+    });
+    const overlayReadyToShow = new Promise<void>((resolve) => {
+      this.overlayWindow!.once('ready-to-show', resolve);
+    });
+
     await Promise.all([
       this.loadRoute(this.dashboardWindow, '/dashboard'),
       this.loadRoute(this.overlayWindow, '/overlay'),
     ]);
+
+    // Wait for the first paint before showing the windows to avoid a black flash.
+    await Promise.all([dashboardReadyToShow, overlayReadyToShow]);
 
     this.dashboardWindow.show();
     this.overlayWindow.showInactive();

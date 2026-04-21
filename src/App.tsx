@@ -83,7 +83,7 @@ function DashboardApp() {
             <div className="mt-3 space-y-2 text-sm text-slate-300">
               <p>`Ctrl+Shift+H` or `Ctrl+Alt+H` toggles visibility</p>
               <p>`Ctrl+Shift+M` or `Ctrl+Alt+M` minimizes the panel</p>
-              <p>`Ctrl+Shift+F` focuses manual answer input</p>
+              <p>`Ctrl+Shift+Space` focuses manual answer input</p>
             </div>
           </div>
         </aside>

@@ -66,7 +66,9 @@ export function SettingsPanel({
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
               Focus manual input
             </p>
-            <p className="mt-3 font-mono text-sm text-slate-100">Ctrl+Shift+F</p>
+            <p className="mt-3 font-mono text-sm text-slate-100">
+              Ctrl+Shift+Space
+            </p>
           </div>
         </div>
       </div>

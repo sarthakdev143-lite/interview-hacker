@@ -141,7 +141,7 @@ export function Overlay({
 
           <div className="mt-3 flex items-center justify-between gap-3">
             <p className="text-xs text-slate-500">
-              `Ctrl+Shift+F` focuses this field from anywhere.
+              `Ctrl+Shift+Space` focuses this field.
             </p>
             <div className="flex items-center gap-2">
               <button

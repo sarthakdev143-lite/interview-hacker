@@ -8,15 +8,15 @@ import type { AppState, PublicSettings } from '../types/contracts';
 const modelOptions = [
   {
     label: 'llama-3.3-70b-versatile',
-    description: 'Balanced default for high-quality answers',
+    description: 'Balanced default - best for most interview answers',
   },
   {
-    label: 'llama-4-scout-17b-16e-instruct',
+    label: 'meta-llama/llama-4-scout-17b-16e-instruct',
     description: 'Faster and lighter for lower latency',
   },
   {
-    label: 'gpt-oss-120b',
-    description: 'Most capable option for deeper reasoning',
+    label: 'meta-llama/llama-4-maverick-17b-128e-instruct',
+    description: 'Most capable - best for complex technical questions',
   },
 ];
 

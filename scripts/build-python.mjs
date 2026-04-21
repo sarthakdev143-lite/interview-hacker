@@ -6,10 +6,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 const pythonDir = path.join(repoRoot, 'python');
-const serverEntry = path.join(pythonDir, 'server.py');
 const distDir = path.join(pythonDir, 'dist');
 const buildDir = path.join(pythonDir, 'build');
-const specDir = buildDir;
+const specFile = path.join(pythonDir, 'wingman-server.spec');
 
 const command =
   process.env.WINGMAN_PYTHON_BIN ??
@@ -23,16 +22,11 @@ const args = [
   'PyInstaller',
   '--noconfirm',
   '--clean',
-  '--onefile',
-  '--name',
-  'wingman-server',
   '--distpath',
   distDir,
   '--workpath',
   buildDir,
-  '--specpath',
-  specDir,
-  serverEntry,
+  specFile,
 ];
 
 const result = spawnSync(command, args, {
@@ -44,3 +38,9 @@ const result = spawnSync(command, args, {
 if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
+
+console.log('\nPython server built successfully.');
+console.log('If Windows Defender flags wingman-server.exe:');
+console.log('  1. Open Windows Security > Virus & threat protection');
+console.log('  2. Add an exclusion for: python/dist/wingman-server/');
+console.log('  3. Re-run: npm run package\n');

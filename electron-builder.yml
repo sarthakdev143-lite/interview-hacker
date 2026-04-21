@@ -1,0 +1,37 @@
+appId: com.wingman.desktop
+productName: WingMan
+asar: true
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - package.json
+
+extraResources:
+  - from: python/dist
+    to: python
+    filter:
+      - wingman-server*
+
+win:
+  target:
+    - nsis
+  artifactName: WingMan-${version}-setup.${ext}
+  signAndEditExecutable: false
+  verifyUpdateCodeSignature: false
+
+mac:
+  target:
+    - dmg
+  artifactName: WingMan-${version}.${ext}
+
+linux:
+  target:
+    - AppImage
+  artifactName: WingMan-${version}.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

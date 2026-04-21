@@ -1,0 +1,57 @@
+{
+  "name": "wingman",
+  "productName": "WingMan",
+  "version": "1.0.0",
+  "description": "A real-time desktop interview assistant built with Electron, React, and Python.",
+  "main": "dist/main/main.js",
+  "private": true,
+  "scripts": {
+    "start": "npm run dev",
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:preload\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --config vite.renderer.config.ts",
+    "dev:main": "vite build --watch --config vite.main.config.ts",
+    "dev:preload": "vite build --watch --config vite.preload.config.ts",
+    "dev:electron": "wait-on tcp:5173 file:dist/main/main.js file:dist/preload/preload.js && nodemon --config nodemon.electron.json",
+    "build": "npm run build:renderer && npm run build:main && npm run build:preload",
+    "build:renderer": "vite build --config vite.renderer.config.ts",
+    "build:main": "vite build --config vite.main.config.ts",
+    "build:preload": "vite build --config vite.preload.config.ts",
+    "package": "npm run build && node scripts/build-python.mjs && electron-builder --config electron-builder.yml",
+    "lint": "eslint --ext .ts,.tsx .",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": {
+    "name": "Abhishek Rathore",
+    "email": "rathorabhishek133@gmail.com"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.16.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@typescript-eslint/eslint-plugin": "^8.29.0",
+    "@typescript-eslint/parser": "^8.29.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.1.2",
+    "cross-env": "^10.1.0",
+    "electron": "^41.2.1",
+    "electron-builder": "^26.0.12",
+    "eslint": "^8.57.1",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import": "^2.32.0",
+    "nodemon": "^3.1.10",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.21",
+    "wait-on": "^8.0.3"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.0",
+    "uuid": "^11.1.0"
+  }
+}

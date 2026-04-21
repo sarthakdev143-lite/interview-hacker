@@ -7,16 +7,30 @@ import type { HealthPayload } from './types/contracts';
 
 const PORT_PREFIX = 'PORT:';
 
+export interface PythonServerExitInfo {
+  code: number | null;
+  expected: boolean;
+}
+
+interface PythonServerManagerOptions {
+  onExit?: (info: PythonServerExitInfo) => void;
+}
+
 function splitLines(buffer: string) {
   return buffer.split(/\r?\n/).filter(Boolean);
 }
 
 export class PythonServerManager {
-  constructor(private readonly isPackaged: boolean) {}
+  constructor(
+    private readonly isPackaged: boolean,
+    private readonly options: PythonServerManagerOptions = {},
+  ) {}
 
   private child: ChildProcessWithoutNullStreams | null = null;
 
   private port: number | null = null;
+
+  private isExpectedShutdown = false;
 
   async start(historyDir: string): Promise<HealthPayload> {
     if (this.child && this.port) {
@@ -26,6 +40,7 @@ export class PythonServerManager {
     await fs.mkdir(historyDir, { recursive: true });
 
     const { command, args } = this.getSpawnTarget();
+    this.isExpectedShutdown = false;
     this.child = spawn(command, args, {
       cwd: process.cwd(),
       env: {
@@ -61,11 +76,14 @@ export class PythonServerManager {
     });
 
     this.child.on('exit', (code) => {
+      const expected = this.isExpectedShutdown;
       if (code !== 0 && code !== null) {
         console.error(`[wingman-python] exited with code ${code}`);
       }
       this.child = null;
       this.port = null;
+      this.isExpectedShutdown = false;
+      this.options.onExit?.({ code, expected });
     });
 
     const startedAt = Date.now();
@@ -95,6 +113,10 @@ export class PythonServerManager {
 
   getPort() {
     return this.port;
+  }
+
+  isRunning() {
+    return Boolean(this.child && this.port);
   }
 
   private async waitForHealth(): Promise<HealthPayload> {
@@ -161,6 +183,7 @@ export class PythonServerManager {
       return;
     }
 
+    this.isExpectedShutdown = true;
     if (this.port) {
       try {
         await fetch(`http://127.0.0.1:${this.port}/session/stop`, {

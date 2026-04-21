@@ -4,6 +4,7 @@ import json
 import queue
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Generator, Iterable
 from uuid import uuid4
@@ -27,7 +28,11 @@ QUESTION_KEYWORDS = (
 )
 QUESTION_SETTLE_SECONDS = 0.9
 SILENCE_HANGOVER_SECONDS = 0.6
-SPEECH_RMS_THRESHOLD = 140
+PCM_BYTES_PER_SECOND = 16000 * 2
+PRE_ROLL_SECONDS = 0.45
+SPEECH_RMS_THRESHOLD = 28
+SPEECH_RMS_MULTIPLIER = 1.8
+NOISE_FLOOR_SMOOTHING = 0.08
 
 
 class SessionManager:
@@ -56,6 +61,9 @@ class SessionManager:
         self.last_transcript_at = 0.0
         self.last_voice_activity_at = 0.0
         self.speech_active = False
+        self.pre_roll_chunks: deque[bytes] = deque()
+        self.pre_roll_buffered_bytes = 0
+        self.noise_floor_rms = 0.0
         self.started_at = None
         self.exchanges: list[dict] = []
         self.history_enabled = False
@@ -244,10 +252,19 @@ class SessionManager:
         if not self.transcriber:
             return
 
-        chunk_has_speech = self._chunk_has_speech(audio_chunk)
+        if not self.speech_active:
+            self._buffer_pre_roll_chunk(audio_chunk)
+
+        rms = self._chunk_rms(audio_chunk)
+        chunk_has_speech = self._chunk_has_speech(rms)
         if chunk_has_speech:
             self.speech_active = True
             self.last_voice_activity_at = time.time()
+            if self.pre_roll_chunks:
+                text = self._prime_transcriber_from_pre_roll()
+                if text:
+                    self._publish_transcript(text)
+                return
 
         if not self.speech_active:
             return
@@ -271,6 +288,7 @@ class SessionManager:
             print(f"[wingman] Final transcription flush failed: {error}")
         finally:
             self.speech_active = False
+            self._clear_pre_roll_buffer()
 
     def _publish_transcript(self, text: str):
         normalized = " ".join(text.split()).strip()
@@ -388,12 +406,58 @@ class SessionManager:
         return any(keyword in lowered for keyword in QUESTION_KEYWORDS)
 
     @staticmethod
-    def _chunk_has_speech(audio_chunk: bytes) -> bool:
+    def _chunk_rms(audio_chunk: bytes) -> float:
         samples = np.frombuffer(audio_chunk, dtype=np.int16)
         if samples.size == 0:
-            return False
-        rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float32)))))
-        return rms >= SPEECH_RMS_THRESHOLD
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(samples.astype(np.float32)))))
+
+    def _chunk_has_speech(self, rms: float) -> bool:
+        threshold = max(
+            SPEECH_RMS_THRESHOLD,
+            self.noise_floor_rms * SPEECH_RMS_MULTIPLIER,
+        )
+        has_speech = rms >= threshold
+
+        if not self.speech_active and not has_speech:
+            if self.noise_floor_rms <= 0:
+                self.noise_floor_rms = rms
+            else:
+                self.noise_floor_rms = (
+                    self.noise_floor_rms * (1 - NOISE_FLOOR_SMOOTHING)
+                    + rms * NOISE_FLOOR_SMOOTHING
+                )
+
+        return has_speech
+
+    def _buffer_pre_roll_chunk(self, audio_chunk: bytes):
+        self.pre_roll_chunks.append(audio_chunk)
+        self.pre_roll_buffered_bytes += len(audio_chunk)
+
+        max_bytes = int(PRE_ROLL_SECONDS * PCM_BYTES_PER_SECOND)
+        while self.pre_roll_buffered_bytes > max_bytes and self.pre_roll_chunks:
+            removed = self.pre_roll_chunks.popleft()
+            self.pre_roll_buffered_bytes -= len(removed)
+
+    def _prime_transcriber_from_pre_roll(self):
+        if not self.transcriber:
+            return None
+
+        primed_texts: list[str] = []
+        for chunk in self.pre_roll_chunks:
+            text = self.transcriber.feed(chunk)
+            if text:
+                primed_texts.append(text)
+
+        self._clear_pre_roll_buffer()
+        if not primed_texts:
+            return None
+
+        return " ".join(primed_texts).strip()
+
+    def _clear_pre_roll_buffer(self):
+        self.pre_roll_chunks.clear()
+        self.pre_roll_buffered_bytes = 0
 
     def _save_history(self, session_snapshot: dict):
         session_id = session_snapshot.get("session_id")

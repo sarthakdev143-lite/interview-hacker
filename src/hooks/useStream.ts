@@ -30,6 +30,7 @@ export function useStream(serverPort: number | null) {
       return;
     }
 
+    setStreamError(null);
     const transcriptSource = new EventSource(
       `http://127.0.0.1:${serverPort}/transcript/stream`,
     );
@@ -37,7 +38,15 @@ export function useStream(serverPort: number | null) {
       `http://127.0.0.1:${serverPort}/answer/stream`,
     );
 
+    const clearStreamError = () => {
+      setStreamError(null);
+    };
+
+    transcriptSource.onopen = clearStreamError;
+    answerSource.onopen = clearStreamError;
+
     transcriptSource.onmessage = (event) => {
+      clearStreamError();
       const payload = JSON.parse(event.data) as TranscriptEventPayload;
       if (payload.type === 'status' && payload.status) {
         setStatus(payload.status);
@@ -57,6 +66,7 @@ export function useStream(serverPort: number | null) {
     };
 
     answerSource.onmessage = (event) => {
+      clearStreamError();
       const payload = JSON.parse(event.data) as AnswerEventPayload;
       if (payload.type === 'status' && payload.status) {
         if (payload.status === 'thinking') {

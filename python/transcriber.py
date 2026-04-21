@@ -18,7 +18,8 @@ class Transcriber:
         self.model = model
         self.language = language
         self.buffer: list[bytes] = []
-        self.buffer_duration = 3
+        self.buffer_duration = 1.8
+        self.min_flush_duration = 0.5
         self.sample_rate = 16000
         self.bytes_per_second = self.sample_rate * 2
         self.buffered_bytes = 0
@@ -36,12 +37,15 @@ class Transcriber:
         return self.transcribe_buffer()
 
     def flush(self) -> Optional[str]:
-        if self.buffered_bytes < self.bytes_per_second:
+        if self.buffered_bytes < self.bytes_per_second * self.min_flush_duration:
             self.buffer.clear()
             self.buffered_bytes = 0
             return None
 
         return self.transcribe_buffer()
+
+    def has_buffered_audio(self) -> bool:
+        return self.buffered_bytes > 0
 
     def transcribe_buffer(self) -> Optional[str]:
         audio_bytes = b"".join(self.buffer)

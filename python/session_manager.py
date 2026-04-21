@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Generator, Iterable
 from uuid import uuid4
 
+import numpy as np
+
 from audio_capture import AudioCapture
 from llm import LLMClient
 from transcriber import Transcriber
@@ -23,6 +25,9 @@ QUESTION_KEYWORDS = (
     "could you",
     "walk me through",
 )
+QUESTION_SETTLE_SECONDS = 0.9
+SILENCE_HANGOVER_SECONDS = 0.6
+SPEECH_RMS_THRESHOLD = 140
 
 
 class SessionManager:
@@ -31,7 +36,6 @@ class SessionManager:
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.transcript_subscribers: set[queue.Queue] = set()
         self.answer_subscribers: set[queue.Queue] = set()
-        self.answer_lock = threading.Lock()
         self.state_lock = threading.Lock()
         self._reset_runtime()
 
@@ -43,12 +47,15 @@ class SessionManager:
         self.transcriber: Transcriber | None = None
         self.llm: LLMClient | None = None
         self.audio_queue: queue.Queue[bytes] = queue.Queue(maxsize=512)
+        self.answer_queue: queue.Queue[tuple[str, queue.Queue | None]] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
-        self.answer_thread: threading.Thread | None = None
+        self.answer_worker_thread: threading.Thread | None = None
         self.pending_question_segments: list[str] = []
         self.question_candidate_active = False
         self.last_transcript_at = 0.0
+        self.last_voice_activity_at = 0.0
+        self.speech_active = False
         self.started_at = None
         self.exchanges: list[dict] = []
         self.history_enabled = False
@@ -86,6 +93,11 @@ class SessionManager:
                     daemon=True,
                 )
                 self.worker_thread.start()
+                self.answer_worker_thread = threading.Thread(
+                    target=self._answer_loop,
+                    daemon=True,
+                )
+                self.answer_worker_thread.start()
             except Exception:
                 self._reset_runtime()
                 raise
@@ -96,7 +108,7 @@ class SessionManager:
     def stop_session(self):
         capture = self.capture
         worker = self.worker_thread
-        answer_thread = self.answer_thread
+        answer_worker = self.answer_worker_thread
         history_enabled = self.history_enabled
         session_snapshot = {
             "session_id": self.session_id,
@@ -112,8 +124,8 @@ class SessionManager:
         if worker is not None and worker.is_alive():
             worker.join(timeout=2.5)
 
-        if answer_thread is not None and answer_thread.is_alive():
-            answer_thread.join(timeout=2.0)
+        if answer_worker is not None and answer_worker.is_alive():
+            answer_worker.join(timeout=2.0)
 
         if history_enabled:
             self._save_history(session_snapshot)
@@ -129,12 +141,8 @@ class SessionManager:
             raise RuntimeError("Start a session before requesting a manual answer.")
 
         local_queue: queue.Queue = queue.Queue()
-        threading.Thread(
-            target=self._stream_answer_worker,
-            args=(prompt, local_queue),
-            daemon=True,
-        ).start()
-        return self._yield_queue(local_queue)
+        self.answer_queue.put((prompt, local_queue))
+        return self._yield_queue(local_queue, close_on_done=True)
 
     def subscribe_transcripts(self) -> Generator[dict, None, None]:
         subscriber: queue.Queue = queue.Queue()
@@ -155,12 +163,21 @@ class SessionManager:
                 continue
         return sessions
 
-    def _yield_queue(self, subscriber: queue.Queue, kind: str | None = None):
-        collection = (
-            self.transcript_subscribers if kind == "transcript" else self.answer_subscribers
-        )
+    def _yield_queue(
+        self,
+        subscriber: queue.Queue,
+        kind: str | None = None,
+        close_on_done: bool = False,
+    ):
+        collection = None
+        if kind == "transcript":
+            collection = self.transcript_subscribers
+        elif kind == "answer":
+            collection = self.answer_subscribers
 
         if self.status and kind == "transcript":
+            subscriber.put({"type": "status", "status": self.status})
+        elif self.status and kind == "answer":
             subscriber.put({"type": "status", "status": self.status})
 
         try:
@@ -168,12 +185,13 @@ class SessionManager:
                 try:
                     item = subscriber.get(timeout=15)
                     yield item
-                    if item.get("type") == "done":
+                    if close_on_done and item.get("type") == "done":
                         break
                 except queue.Empty:
                     yield {"type": "heartbeat"}
         finally:
-            collection.discard(subscriber)
+            if collection is not None:
+                collection.discard(subscriber)
 
     def _enqueue_audio(self, audio_chunk: bytes):
         if self.stop_event.is_set():
@@ -192,27 +210,67 @@ class SessionManager:
             try:
                 audio_chunk = self.audio_queue.get(timeout=0.25)
             except queue.Empty:
+                self._flush_transcriber_if_ready()
                 self._flush_pending_question_if_ready()
                 continue
 
             try:
-                text = self.transcriber.feed(audio_chunk) if self.transcriber else None
-                if text:
-                    self._publish_transcript(text)
+                self._process_audio_chunk(audio_chunk)
             except Exception as error:
                 print(f"[wingman] Transcription error: {error}")
 
+            self._flush_transcriber_if_ready()
             self._flush_pending_question_if_ready()
 
-        if self.transcriber is not None:
-            try:
-                tail = self.transcriber.flush()
-                if tail:
-                    self._publish_transcript(tail)
-            except Exception as error:
-                print(f"[wingman] Final transcription flush failed: {error}")
-
+        self._flush_transcriber_if_ready(force=True)
         self._flush_pending_question_if_ready(force=True)
+
+    def _answer_loop(self):
+        while True:
+            if self.stop_event.is_set() and self.answer_queue.empty():
+                return
+
+            try:
+                prompt, local_queue = self.answer_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+
+            try:
+                self._stream_answer_worker(prompt, local_queue)
+            finally:
+                self.answer_queue.task_done()
+
+    def _process_audio_chunk(self, audio_chunk: bytes):
+        if not self.transcriber:
+            return
+
+        chunk_has_speech = self._chunk_has_speech(audio_chunk)
+        if chunk_has_speech:
+            self.speech_active = True
+            self.last_voice_activity_at = time.time()
+
+        if not self.speech_active:
+            return
+
+        text = self.transcriber.feed(audio_chunk)
+        if text:
+            self._publish_transcript(text)
+
+    def _flush_transcriber_if_ready(self, force: bool = False):
+        if not self.transcriber or not self.speech_active or not self.transcriber.has_buffered_audio():
+            return
+
+        if not force and (time.time() - self.last_voice_activity_at) < SILENCE_HANGOVER_SECONDS:
+            return
+
+        try:
+            tail = self.transcriber.flush()
+            if tail:
+                self._publish_transcript(tail)
+        except Exception as error:
+            print(f"[wingman] Final transcription flush failed: {error}")
+        finally:
+            self.speech_active = False
 
     def _publish_transcript(self, text: str):
         normalized = " ".join(text.split()).strip()
@@ -243,7 +301,7 @@ class SessionManager:
         if not self.question_candidate_active or not self.pending_question_segments:
             return
 
-        if not force and (time.time() - self.last_transcript_at) < 2.0:
+        if not force and (time.time() - self.last_transcript_at) < QUESTION_SETTLE_SECONDS:
             return
 
         question = " ".join(self.pending_question_segments).strip()
@@ -261,53 +319,47 @@ class SessionManager:
             self._broadcast_transcript({"type": "status", "status": "listening"})
             return
 
-        self.answer_thread = threading.Thread(
-            target=self._stream_answer_worker,
-            args=(question, None),
-            daemon=True,
-        )
-        self.answer_thread.start()
+        self.answer_queue.put((question, None))
 
     def _stream_answer_worker(self, prompt: str, local_queue: queue.Queue | None):
         if not self.llm:
             return
 
-        with self.answer_lock:
-            self.status = "thinking"
-            self._fan_out({"type": "status", "status": "thinking"}, local_queue)
-            tokens: list[str] = []
+        self.status = "thinking"
+        self._fan_out({"type": "status", "status": "thinking"}, local_queue)
+        tokens: list[str] = []
 
-            try:
-                for token in self.llm.stream_answer(prompt, self.session):
-                    if self.stop_event.is_set():
-                        break
+        try:
+            for token in self.llm.stream_answer(prompt, self.session):
+                if self.stop_event.is_set():
+                    break
 
-                    if self.status != "answering":
-                        self.status = "answering"
-                        self._fan_out({"type": "status", "status": "answering"}, local_queue)
+                if self.status != "answering":
+                    self.status = "answering"
+                    self._fan_out({"type": "status", "status": "answering"}, local_queue)
 
-                    tokens.append(token)
-                    self._fan_out({"type": "token", "text": token}, local_queue)
-            except Exception as error:
-                fallback = "I lost the answer stream. Please ask the question again."
-                print(f"[wingman] Answer generation failed: {error}")
-                tokens = [fallback]
-                self._fan_out({"type": "token", "text": fallback}, local_queue)
+                tokens.append(token)
+                self._fan_out({"type": "token", "text": token}, local_queue)
+        except Exception as error:
+            fallback = "I lost the answer stream. Please ask the question again."
+            print(f"[wingman] Answer generation failed: {error}")
+            tokens = [fallback]
+            self._fan_out({"type": "token", "text": fallback}, local_queue)
 
-            answer = "".join(tokens).strip()
-            if answer:
-                self.exchanges.append(
-                    {
-                        "question": prompt,
-                        "answer": answer,
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    }
-                )
+        answer = "".join(tokens).strip()
+        if answer:
+            self.exchanges.append(
+                {
+                    "question": prompt,
+                    "answer": answer,
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            )
 
-            self.status = "done"
-            self._fan_out({"type": "done"}, local_queue)
-            self._broadcast_transcript({"type": "status", "status": "listening"})
-            self.status = "listening"
+        self.status = "done"
+        self._fan_out({"type": "done"}, local_queue)
+        self._broadcast_transcript({"type": "status", "status": "listening"})
+        self.status = "listening"
 
     def _fan_out(self, payload: dict, local_queue: queue.Queue | None):
         self._broadcast_answer(payload)
@@ -334,6 +386,14 @@ class SessionManager:
         if text.strip().endswith("?"):
             return True
         return any(keyword in lowered for keyword in QUESTION_KEYWORDS)
+
+    @staticmethod
+    def _chunk_has_speech(audio_chunk: bytes) -> bool:
+        samples = np.frombuffer(audio_chunk, dtype=np.int16)
+        if samples.size == 0:
+            return False
+        rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float32)))))
+        return rms >= SPEECH_RMS_THRESHOLD
 
     def _save_history(self, session_snapshot: dict):
         session_id = session_snapshot.get("session_id")

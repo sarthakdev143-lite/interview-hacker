@@ -21,11 +21,13 @@ body {
     radial-gradient(circle at 90% 10%, rgba(97, 243, 193, 0.14), transparent 22%),
     linear-gradient(145deg, rgba(5, 7, 12, 1), rgba(10, 15, 29, 0.98));
   color: #f8fafc;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 body[data-surface='overlay'] {
   background: transparent;
+  overflow: hidden;
 }
 
 * {

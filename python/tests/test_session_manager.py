@@ -25,9 +25,11 @@ class FakeTranscriber:
     def __init__(self, flush_text: str):
         self.flush_text = flush_text
         self.buffered = False
+        self.feed_chunks: list[bytes] = []
 
-    def feed(self, _audio_chunk: bytes):
+    def feed(self, audio_chunk: bytes):
         self.buffered = True
+        self.feed_chunks.append(audio_chunk)
         return None
 
     def flush(self):
@@ -84,6 +86,15 @@ class SessionManagerTests(unittest.TestCase):
         question, local_queue = self.manager.answer_queue.get_nowait()
         self.assertEqual(question, "What is React")
         self.assertIsNone(local_queue)
+
+    def test_quiet_speech_still_reaches_transcriber(self):
+        self.manager.transcriber = FakeTranscriber("")
+
+        quiet_chunk = (np.ones(1024, dtype=np.int16) * 60).tobytes()
+        self.manager._process_audio_chunk(quiet_chunk)
+
+        self.assertTrue(self.manager.speech_active)
+        self.assertGreater(len(self.manager.transcriber.feed_chunks), 0)
 
 
 if __name__ == "__main__":

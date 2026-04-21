@@ -81,9 +81,9 @@ function DashboardApp() {
               Overlay shortcuts
             </p>
             <div className="mt-3 space-y-2 text-sm text-slate-300">
-              <p>`Ctrl+Shift+H` toggles visibility</p>
-              <p>`Ctrl+Shift+M` minimizes the panel</p>
-              <p>`/` focuses manual answer input</p>
+              <p>`Ctrl+Shift+H` or `Ctrl+Alt+H` toggles visibility</p>
+              <p>`Ctrl+Shift+M` or `Ctrl+Alt+M` minimizes the panel</p>
+              <p>`Ctrl+Shift+F` focuses manual answer input</p>
             </div>
           </div>
         </aside>
@@ -93,7 +93,11 @@ function DashboardApp() {
             <Route
               element={
                 <SessionSetup
-                  actionError={session.actionError ?? stream.streamError}
+                  actionError={
+                    session.actionError ??
+                    stream.streamError ??
+                    session.appState.error
+                  }
                   answer={stream.answer}
                   appState={session.appState}
                   canStart={session.canStart}

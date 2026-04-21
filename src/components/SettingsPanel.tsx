@@ -50,19 +50,23 @@ export function SettingsPanel({
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
               Toggle overlay
             </p>
-            <p className="mt-3 font-mono text-sm text-slate-100">Ctrl+Shift+H</p>
+            <p className="mt-3 font-mono text-sm text-slate-100">
+              Ctrl+Shift+H or Ctrl+Alt+H
+            </p>
           </div>
           <div className="rounded-3xl border border-white/10 bg-slate-950/50 p-4">
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
               Minimize overlay
             </p>
-            <p className="mt-3 font-mono text-sm text-slate-100">Ctrl+Shift+M</p>
+            <p className="mt-3 font-mono text-sm text-slate-100">
+              Ctrl+Shift+M or Ctrl+Alt+M
+            </p>
           </div>
           <div className="rounded-3xl border border-white/10 bg-slate-950/50 p-4">
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
               Focus manual input
             </p>
-            <p className="mt-3 font-mono text-sm text-slate-100">/</p>
+            <p className="mt-3 font-mono text-sm text-slate-100">Ctrl+Shift+F</p>
           </div>
         </div>
       </div>

@@ -1,11 +1,16 @@
 import {
   app,
+  dialog,
   globalShortcut,
   ipcMain,
   shell,
 } from 'electron';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { PythonServerManager } from './pythonServer';
+import {
+  PythonServerManager,
+  type PythonServerExitInfo,
+} from './pythonServer';
 import { SecureStore } from './secureStore';
 import type {
   AppState,
@@ -19,10 +24,12 @@ let isShuttingDown = false;
 
 const userDataPath = app.getPath('userData');
 const historyPath = path.join(userDataPath, 'history');
+const logPath = path.join(userDataPath, 'wingman.log');
 const preloadPath = path.join(__dirname, '../preload/preload.js');
 const secureStore = new SecureStore(userDataPath);
-const pythonServer = new PythonServerManager(app.isPackaged);
 const windowManager = new WindowManager(preloadPath);
+let serverStartPromise: Promise<void> | null = null;
+let serverRestartTimeout: NodeJS.Timeout | null = null;
 
 let appState: AppState = {
   serverReady: false,
@@ -44,34 +51,150 @@ function updateState(patch: Partial<AppState>) {
   windowManager.sendAppState(appState);
 }
 
+function formatError(error: unknown) {
+  if (error instanceof Error) {
+    return `${error.name}: ${error.message}\n${error.stack ?? ''}`.trim();
+  }
+
+  return String(error);
+}
+
+async function logAppError(scope: string, error: unknown) {
+  const message = `[${new Date().toISOString()}] ${scope}\n${formatError(error)}\n\n`;
+  try {
+    await fs.mkdir(userDataPath, { recursive: true });
+    await fs.appendFile(logPath, message, 'utf8');
+  } catch (logError) {
+    console.error('Failed to write WingMan log file.', logError);
+  }
+}
+
+async function handleUnexpectedPythonExit(info: PythonServerExitInfo) {
+  if (info.expected || isShuttingDown) {
+    return;
+  }
+
+  const codeDetails =
+    info.code === null ? 'The process exited unexpectedly.' : `Exit code ${info.code}.`;
+  await logAppError('python-exit', codeDetails);
+  scheduleServerRestart(
+    'Lost connection to the local backend. WingMan is trying to reconnect.',
+  );
+}
+
+const pythonServer = new PythonServerManager(app.isPackaged, {
+  onExit: (info) => {
+    void handleUnexpectedPythonExit(info);
+  },
+});
+
+async function ensureServerReady(nextStatus: AppState['sessionStatus']) {
+  if (serverStartPromise) {
+    return serverStartPromise;
+  }
+
+  serverStartPromise = (async () => {
+    const health = await pythonServer.start(historyPath);
+    updateState({
+      serverReady: true,
+      serverPort: health.port,
+      sessionStatus: nextStatus,
+      currentSessionId: nextStatus === 'idle' ? null : appState.currentSessionId,
+      health,
+      error: null,
+    });
+  })().finally(() => {
+    serverStartPromise = null;
+  });
+
+  return serverStartPromise;
+}
+
 async function bootstrapServer() {
-  const health = await pythonServer.start(historyPath);
+  await ensureServerReady('ready');
+}
+
+function scheduleServerRestart(message: string) {
   updateState({
-    serverReady: true,
-    serverPort: health.port,
-    sessionStatus: 'ready',
-    health,
-    error: null,
+    serverReady: false,
+    serverPort: null,
+    sessionStatus: 'error',
+    currentSessionId: null,
+    health: null,
+    error: message,
+  });
+
+  if (serverRestartTimeout || isShuttingDown) {
+    return;
+  }
+
+  serverRestartTimeout = setTimeout(() => {
+    serverRestartTimeout = null;
+    void ensureServerReady('idle').catch(async (error) => {
+      await logAppError('python-restart', error);
+      scheduleServerRestart(
+        'The local backend is still unavailable. WingMan will keep retrying.',
+      );
+    });
+  }, 1200);
+}
+
+function registerShortcut(
+  label: string,
+  accelerators: string[],
+  handler: () => void,
+) {
+  const registered = accelerators.filter((accelerator) => {
+    try {
+      return globalShortcut.register(accelerator, handler);
+    } catch (error) {
+      void logAppError(
+        'shortcut-register',
+        `${label}: ${accelerator}\n${formatError(error)}`,
+      );
+      return false;
+    }
+  });
+
+  if (registered.length === 0) {
+    void logAppError(
+      'shortcut-register',
+      `Unable to register ${label}. Tried: ${accelerators.join(', ')}`,
+    );
+  }
+
+  return registered;
+}
+
+function toggleOverlayVisibility() {
+  windowManager.toggleOverlayVisibility();
+  updateState({
   });
 }
 
 function registerShortcuts() {
-  globalShortcut.register('CommandOrControl+Shift+H', () => {
-    windowManager.toggleOverlayVisibility();
-    updateState({});
-  });
+  registerShortcut(
+    'toggle overlay',
+    ['CommandOrControl+Shift+H', 'CommandOrControl+Alt+H'],
+    toggleOverlayVisibility,
+  );
 
-  globalShortcut.register('CommandOrControl+Shift+M', () => {
-    windowManager.toggleOverlayMinimize();
-    updateState({});
-  });
+  registerShortcut(
+    'minimize overlay',
+    ['CommandOrControl+Shift+M', 'CommandOrControl+Alt+M'],
+    () => {
+      windowManager.toggleOverlayMinimize();
+      updateState({});
+    },
+  );
 
-  globalShortcut.register('/', () => {
+  registerShortcut('focus manual input', ['CommandOrControl+Shift+F'], () => {
     windowManager.focusOverlayInput();
   });
 }
 
 async function startSession(config: StartSessionRequest) {
+  await ensureServerReady('idle');
   const apiKey = config.apiKey?.trim() || (await secureStore.getApiKey());
   if (!apiKey) {
     throw new Error('A Groq API key is required before starting a session.');
@@ -117,6 +240,15 @@ async function startSession(config: StartSessionRequest) {
 }
 
 async function stopSession() {
+  if (!pythonServer.isRunning()) {
+    updateState({
+      sessionStatus: 'stopped',
+      currentSessionId: null,
+      error: null,
+    });
+    return { status: 'stopped' as AppState['sessionStatus'] };
+  }
+
   const response = await pythonServer.request<{ status: AppState['sessionStatus'] }>(
     '/session/stop',
     {
@@ -222,6 +354,10 @@ async function shutdownAndQuit() {
   }
 
   isShuttingDown = true;
+  if (serverRestartTimeout) {
+    clearTimeout(serverRestartTimeout);
+    serverRestartTimeout = null;
+  }
   try {
     await pythonServer.shutdown();
   } finally {
@@ -235,12 +371,27 @@ app.whenReady().then(async () => {
     await createApp();
   } catch (error) {
     console.error(error);
+    await logAppError('startup', error);
     updateState({
       sessionStatus: 'error',
       error: error instanceof Error ? error.message : 'Failed to bootstrap WingMan.',
     });
+    dialog.showErrorBox(
+      'WingMan failed to start',
+      `${error instanceof Error ? error.message : 'Failed to bootstrap WingMan.'}\n\nLogs: ${logPath}`,
+    );
     await shutdownAndQuit();
   }
+});
+
+process.on('uncaughtException', (error) => {
+  console.error(error);
+  void logAppError('uncaughtException', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(reason);
+  void logAppError('unhandledRejection', reason);
 });
 
 app.on('activate', async () => {

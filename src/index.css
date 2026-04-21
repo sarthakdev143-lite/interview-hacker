@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  font-family: Aptos, 'Segoe UI Variable', 'Segoe UI', sans-serif;
+  background: #05070c;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: #05070c;
+  background-image: radial-gradient(circle at top left, rgba(122, 162, 255, 0.24), transparent 35%),
+    radial-gradient(circle at 90% 10%, rgba(97, 243, 193, 0.14), transparent 22%),
+    linear-gradient(145deg, rgba(5, 7, 12, 1), rgba(10, 15, 29, 0.98));
+  color: #f8fafc;
+  overflow: hidden;
+}
+
+body[data-surface='overlay'] {
+  background: transparent;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.overlay-shell {
+  background: rgba(10, 10, 15, 0.88);
+  backdrop-filter: blur(20px);
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}

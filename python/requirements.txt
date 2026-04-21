@@ -1,0 +1,7 @@
+flask
+flask-cors
+groq
+pymupdf
+sounddevice
+numpy
+pyaudiowpatch ; sys_platform == "win32"

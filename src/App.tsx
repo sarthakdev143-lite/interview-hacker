@@ -8,6 +8,24 @@ import { StatusBar } from './components/StatusBar';
 import { useSession } from './hooks/useSession';
 import { useStream } from './hooks/useStream';
 
+const navItems = [
+  {
+    to: '/dashboard',
+    label: 'Mission Control',
+    hint: 'Setup',
+  },
+  {
+    to: '/history',
+    label: 'Session Archive',
+    hint: 'History',
+  },
+  {
+    to: '/settings',
+    label: 'Ops',
+    hint: 'Settings',
+  },
+];
+
 function DashboardApp() {
   const location = useLocation();
   const session = useSession();
@@ -33,62 +51,131 @@ function DashboardApp() {
   }
 
   return (
-    <div className="min-h-screen bg-transparent p-5">
-      <div className="grid min-h-[calc(100vh-2.5rem)] overflow-hidden rounded-[2rem] border border-white/10 bg-white/[0.03] shadow-halo xl:grid-cols-[250px_minmax(0,1fr)]">
-        <aside className="border-r border-white/10 bg-slate-950/50 p-5">
-          <div className="rounded-[1.75rem] border border-white/10 bg-white/[0.04] p-4">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-500">WingMan</p>
-            <h1 className="mt-3 text-2xl font-semibold text-slate-50">
-              Real-time interview wingmate
-            </h1>
-            <p className="mt-2 text-sm text-slate-400">
-              Secure floating answers, live transcription, and resume-aware
-              guidance during interviews.
+    <div className="min-h-screen bg-transparent px-4 py-4 lg:px-6">
+      <div className="app-shell grid min-h-[calc(100vh-2rem)] rounded-[2rem] border border-white/10 xl:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="relative border-b border-white/10 p-5 xl:border-b-0 xl:border-r">
+          <div className="hero-orb left-[-80px] top-[-40px] h-40 w-40 bg-cyan-400/20" />
+          <div className="hero-orb bottom-[-30px] right-[-20px] h-28 w-28 bg-emerald-400/20" />
+
+          <div className="panel-surface-strong relative rounded-[1.75rem] p-5">
+            <p className="text-xs uppercase tracking-[0.34em] text-cyan-200/55">
+              WingMan
             </p>
+            <h1 className="mt-4 max-w-[12ch] text-3xl font-bold leading-tight text-white">
+              Interview support that looks intentional.
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-slate-300">
+              Build context, capture the room, and keep a discreet live answer panel
+              available without the current rough edges.
+            </p>
+
+            <div className="mt-6 grid grid-cols-2 gap-3">
+              <div className="rounded-[1.25rem] border border-white/10 bg-white/[0.04] p-3">
+                <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                  Engine
+                </p>
+                <p className="mt-2 text-sm font-medium text-slate-100">
+                  {session.draft.model.split('/').at(-1)}
+                </p>
+              </div>
+              <div className="rounded-[1.25rem] border border-white/10 bg-white/[0.04] p-3">
+                <p className="text-[11px] uppercase tracking-[0.28em] text-slate-500">
+                  Overlay
+                </p>
+                <p className="mt-2 text-sm font-medium text-slate-100">
+                  {Math.round(session.draft.overlayOpacity * 100)}% opacity
+                </p>
+              </div>
+            </div>
           </div>
 
           <div className="mt-5">
             <StatusBar compact health={session.appState.health} status={session.appState.sessionStatus} />
           </div>
 
-          <nav className="mt-6 space-y-2">
-            {[
-              { to: '/dashboard', label: 'Setup' },
-              { to: '/history', label: 'History' },
-              { to: '/settings', label: 'Settings' },
-            ].map((item) => (
+          <nav className="mt-5 space-y-2">
+            {navItems.map((item) => (
               <NavLink
                 className={({ isActive }) =>
-                  `flex items-center justify-between rounded-2xl px-4 py-3 text-sm transition ${
+                  `group panel-surface flex items-center justify-between rounded-[1.35rem] px-4 py-3 transition ${
                     isActive
-                      ? 'bg-storm/15 text-slate-50'
-                      : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
+                      ? 'border-cyan-300/30 bg-cyan-400/10 text-white'
+                      : 'text-slate-300 hover:border-white/20 hover:bg-white/[0.05]'
                   }`
                 }
                 key={item.to}
                 to={item.to}
               >
-                <span>{item.label}</span>
-                <span className="text-xs uppercase tracking-[0.24em] text-slate-500">
-                  View
+                <div>
+                  <p className="text-sm font-medium">{item.label}</p>
+                  <p className="mt-1 text-xs uppercase tracking-[0.24em] text-slate-500 transition group-hover:text-slate-400">
+                    {item.hint}
+                  </p>
+                </div>
+                <span className="text-lg text-slate-500 transition group-hover:text-slate-300">
+                  +
                 </span>
               </NavLink>
             ))}
           </nav>
 
-          <div className="mt-6 rounded-[1.75rem] border border-white/10 bg-white/[0.04] p-4">
-            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
-              Overlay shortcuts
+          <div className="panel-surface mt-5 rounded-[1.75rem] p-4">
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-500">
+              Global shortcuts
             </p>
-            <div className="mt-3 space-y-2 text-sm text-slate-300">
-              <p>`Ctrl+Shift+H` or `Ctrl+Alt+H` toggles visibility</p>
-              <p>`Ctrl+Shift+M` or `Ctrl+Alt+M` minimizes the panel</p>
-              <p>`Ctrl+Shift+Space` focuses manual answer input</p>
+            <div className="mt-4 space-y-3 text-sm text-slate-300">
+              <div className="flex items-center justify-between gap-3">
+                <span>Toggle overlay</span>
+                <code className="rounded-full border border-white/10 px-3 py-1 text-[11px] text-slate-200">
+                  Ctrl+Shift+H
+                </code>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>Minimize overlay</span>
+                <code className="rounded-full border border-white/10 px-3 py-1 text-[11px] text-slate-200">
+                  Ctrl+Shift+M
+                </code>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>Focus manual input</span>
+                <code className="rounded-full border border-white/10 px-3 py-1 text-[11px] text-slate-200">
+                  Ctrl+Shift+Space
+                </code>
+              </div>
             </div>
           </div>
         </aside>
 
-        <main className="overflow-auto p-6">
+        <main className="relative overflow-auto p-5 lg:p-7">
+          <div className="mb-6 flex flex-col gap-4 rounded-[1.75rem] border border-white/10 bg-white/[0.03] px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.34em] text-cyan-200/60">
+                Control surface
+              </p>
+              <h2 className="mt-2 text-2xl font-semibold text-white">
+                Cleaner hierarchy, faster scanning, less visual noise.
+              </h2>
+            </div>
+            <div className="grid grid-cols-2 gap-3 lg:min-w-[320px]">
+              <div className="rounded-[1.2rem] border border-white/10 bg-slate-950/40 px-4 py-3">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
+                  Server
+                </p>
+                <p className="mt-1 text-sm text-slate-100">
+                  {session.appState.serverReady ? 'Connected' : 'Booting'}
+                </p>
+              </div>
+              <div className="rounded-[1.2rem] border border-white/10 bg-slate-950/40 px-4 py-3">
+                <p className="text-[11px] uppercase tracking-[0.24em] text-slate-500">
+                  Overlay
+                </p>
+                <p className="mt-1 text-sm text-slate-100">
+                  {session.appState.overlayVisible ? 'Visible' : 'Hidden'}
+                </p>
+              </div>
+            </div>
+          </div>
+
           <Routes>
             <Route
               element={

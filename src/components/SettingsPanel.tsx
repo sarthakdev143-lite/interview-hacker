@@ -17,80 +17,69 @@ export function SettingsPanel({
 }: SettingsPanelProps) {
   return (
     <div className="space-y-6">
-      <div className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-6">
-        <h2 className="text-2xl font-semibold text-slate-100">Operational notes</h2>
-        <p className="mt-2 text-sm text-slate-400">
-          The overlay is protected with Electron content protection and global
-          shortcuts stay active even while the interview window has focus.
+      <div className="panel-surface rounded-[1.75rem] p-6">
+        <p className="text-xs uppercase tracking-[0.3em] text-cyan-200/55">
+          Operations
         </p>
-        <div className="mt-5 grid gap-4 md:grid-cols-2">
-          <div className="rounded-3xl border border-white/10 bg-slate-950/50 p-4">
+        <h2 className="mt-3 text-2xl font-semibold text-slate-100">System posture</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+          The overlay stays protected with Electron content protection while global
+          shortcuts remain available over the interview window.
+        </p>
+        <div className="mt-5 grid gap-4 md:grid-cols-3">
+          <div className="rounded-[1.35rem] border border-white/10 bg-slate-950/45 p-4">
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
               Stored key
             </p>
-            <p className="mt-3 text-sm text-slate-200">
+            <p className="mt-3 text-sm leading-6 text-slate-200">
               {settings.apiKeyStored
-                ? 'Available from secure storage or the .env file.'
+                ? 'Available from secure storage or .env.'
                 : 'No Groq API key saved yet.'}
             </p>
           </div>
-          <div className="rounded-3xl border border-white/10 bg-slate-950/50 p-4">
+          <div className="rounded-[1.35rem] border border-white/10 bg-slate-950/45 p-4">
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
               Audio status
             </p>
-            <p className="mt-3 text-sm text-slate-200">{healthMessage}</p>
+            <p className="mt-3 text-sm leading-6 text-slate-200">{healthMessage}</p>
+          </div>
+          <div className="rounded-[1.35rem] border border-white/10 bg-slate-950/45 p-4">
+            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
+              Overlay opacity
+            </p>
+            <p className="mt-3 text-sm leading-6 text-slate-200">
+              {Math.round(settings.overlayOpacity * 100)}% saved as default.
+            </p>
           </div>
         </div>
       </div>
 
-      <div className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-6">
+      <div className="panel-surface rounded-[1.75rem] p-6">
         <h3 className="text-xl font-semibold text-slate-100">Shortcuts</h3>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <div className="rounded-3xl border border-white/10 bg-slate-950/50 p-4">
-            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
-              Toggle overlay
-            </p>
-            <p className="mt-3 font-mono text-sm text-slate-100">
-              Ctrl+Shift+H or Ctrl+Alt+H
-            </p>
-          </div>
-          <div className="rounded-3xl border border-white/10 bg-slate-950/50 p-4">
-            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
-              Minimize overlay
-            </p>
-            <p className="mt-3 font-mono text-sm text-slate-100">
-              Ctrl+Shift+M or Ctrl+Alt+M
-            </p>
-          </div>
-          <div className="rounded-3xl border border-white/10 bg-slate-950/50 p-4">
-            <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
-              Focus manual input
-            </p>
-            <p className="mt-3 font-mono text-sm text-slate-100">
-              Ctrl+Shift+Space
-            </p>
-          </div>
+          {[
+            ['Toggle overlay', 'Ctrl+Shift+H or Ctrl+Alt+H'],
+            ['Minimize overlay', 'Ctrl+Shift+M or Ctrl+Alt+M'],
+            ['Focus manual input', 'Ctrl+Shift+Space'],
+          ].map(([label, value]) => (
+            <div
+              className="rounded-[1.35rem] border border-white/10 bg-slate-950/45 p-4"
+              key={label}
+            >
+              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">{label}</p>
+              <p className="mt-3 font-mono text-sm text-slate-100">{value}</p>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-6">
-        <h3 className="text-xl font-semibold text-slate-100">Overlay</h3>
-        <div className="mt-4 rounded-3xl border border-white/10 bg-slate-950/50 p-4">
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-slate-200">Current transparency</p>
-            <p className="text-sm font-medium text-slate-100">
-              {Math.round(settings.overlayOpacity * 100)}%
-            </p>
-          </div>
-          <p className="mt-3 text-sm text-slate-400">
-            Adjust this from Session Setup, then save defaults to persist it.
-          </p>
-        </div>
-      </div>
-
-      <div className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-6">
+      <div className="panel-surface rounded-[1.75rem] p-6">
         <h3 className="text-xl font-semibold text-slate-100">Maintenance</h3>
-        <div className="mt-4 flex flex-wrap gap-3">
+        <p className="mt-2 text-sm text-slate-400">
+          Persist your current setup, inspect saved history, or open the loopback audio
+          guide if audio capture still needs attention.
+        </p>
+        <div className="mt-5 flex flex-wrap gap-3">
           <button
             className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-white"
             onClick={() => {

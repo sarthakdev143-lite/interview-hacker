@@ -9,33 +9,37 @@ export function Transcript({ lines, compact = false }: TranscriptProps) {
   if (lines.length === 0) {
     return (
       <div
-        className={`rounded-3xl border border-dashed border-white/10 bg-white/[0.03] text-slate-500 ${
+        className={`rounded-[1.5rem] border border-dashed border-white/10 bg-slate-950/35 text-slate-500 ${
           compact ? 'px-3 py-2 text-xs' : 'px-4 py-4 text-sm'
         }`}
       >
-        Live transcript will appear here as system audio is captured.
+        Live transcript will appear here once loopback audio is being captured.
       </div>
     );
   }
 
-  const visibleLines = compact ? lines.slice(-2) : lines.slice(-6);
+  const visibleLines = compact ? lines.slice(-3) : lines.slice(-6);
 
   return (
     <div
-      className={`rounded-3xl border border-white/10 bg-slate-950/50 ${
-        compact ? 'px-3 py-2' : 'px-4 py-4'
+      className={`rounded-[1.5rem] border border-white/10 bg-slate-950/45 ${
+        compact ? 'px-3 py-3' : 'px-4 py-4'
       }`}
     >
-      <div className="space-y-2">
+      <div className="space-y-3">
         {visibleLines.map((line, index) => (
-          <p
+          <div
+            className={`rounded-[1rem] border px-3 py-2 ${
+              line.isQuestion
+                ? 'border-cyan-300/20 bg-cyan-400/8 text-slate-100'
+                : 'border-white/5 bg-white/[0.025] text-slate-300'
+            }`}
             key={`${line.text}-${index}`}
-            className={`leading-relaxed ${
-              line.isQuestion ? 'text-slate-100' : 'text-slate-400'
-            } ${compact ? 'text-xs' : 'text-sm'}`}
           >
-            {line.text}
-          </p>
+            <p className={`${compact ? 'text-xs' : 'text-sm'} leading-relaxed`}>
+              {line.text}
+            </p>
+          </div>
         ))}
       </div>
     </div>

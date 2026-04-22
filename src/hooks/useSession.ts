@@ -15,6 +15,7 @@ const defaultSettings: PublicSettings = {
   language: 'en',
   model: 'llama-3.3-70b-versatile',
   overlayPreset: 'bottom-right',
+  overlayOpacity: 0.95,
   historyEnabled: false,
   apiKeyStored: false,
 };
@@ -44,9 +45,14 @@ export function useSession() {
     language: defaultSettings.language,
     model: defaultSettings.model,
     overlayPreset: defaultSettings.overlayPreset,
+    overlayOpacity: defaultSettings.overlayOpacity,
     historyEnabled: defaultSettings.historyEnabled,
     apiKeyInput: '',
   });
+
+  useEffect(() => {
+    void window.wingman.setOverlayOpacity(draft.overlayOpacity);
+  }, [draft.overlayOpacity]);
 
   useEffect(() => {
     let isActive = true;
@@ -69,6 +75,7 @@ export function useSession() {
           language: nextSettings.language,
           model: nextSettings.model,
           overlayPreset: nextSettings.overlayPreset,
+          overlayOpacity: nextSettings.overlayOpacity,
           historyEnabled: nextSettings.historyEnabled,
         }));
       } catch (error) {
@@ -153,6 +160,7 @@ export function useSession() {
       language: draft.language,
       model: draft.model,
       overlayPreset: draft.overlayPreset,
+      overlayOpacity: draft.overlayOpacity,
       historyEnabled: draft.historyEnabled,
     });
     setSettings(nextSettings);
@@ -208,6 +216,7 @@ export function useSession() {
         language: draft.language,
         model: draft.model,
         overlayPreset: draft.overlayPreset,
+        overlayOpacity: draft.overlayOpacity,
         historyEnabled: draft.historyEnabled,
         apiKey: draft.apiKeyInput.trim() || undefined,
       });
@@ -217,6 +226,7 @@ export function useSession() {
         language: draft.language,
         model: draft.model,
         overlayPreset: draft.overlayPreset,
+        overlayOpacity: draft.overlayOpacity,
         historyEnabled: draft.historyEnabled,
         apiKeyStored: current.apiKeyStored || Boolean(draft.apiKeyInput.trim()),
       }));

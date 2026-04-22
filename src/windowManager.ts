@@ -23,7 +23,15 @@ export class WindowManager {
     await window.loadFile(this.rendererPath, { hash: route });
   }
 
-  async createWindows(preset: OverlayPreset) {
+  private normalizeOpacity(opacity: number) {
+    if (!Number.isFinite(opacity)) {
+      return 0.95;
+    }
+
+    return Math.max(0.25, Math.min(opacity, 1));
+  }
+
+  async createWindows(preset: OverlayPreset, overlayOpacity: number) {
     this.dashboardWindow = new BrowserWindow({
       width: 900,
       height: 700,
@@ -55,6 +63,7 @@ export class WindowManager {
       },
     });
 
+    this.overlayWindow.setOpacity(this.normalizeOpacity(overlayOpacity));
     this.overlayWindow.setAlwaysOnTop(true, 'screen-saver');
     this.overlayWindow.setContentProtection(true);
     if (process.platform !== 'win32') {
@@ -129,6 +138,14 @@ export class WindowManager {
     const normalizedWidth = Math.max(320, Math.min(width, 960));
     const normalizedHeight = Math.max(360, Math.min(height, 1200));
     this.overlayWindow.setSize(normalizedWidth, normalizedHeight);
+  }
+
+  setOverlayOpacity(opacity: number) {
+    if (!this.overlayWindow) {
+      return;
+    }
+
+    this.overlayWindow.setOpacity(this.normalizeOpacity(opacity));
   }
 
   toggleOverlayVisibility() {

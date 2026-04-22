@@ -4,6 +4,7 @@ import {
   ipcMain,
   shell,
 } from 'electron';
+import 'dotenv/config';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
@@ -18,8 +19,6 @@ import type {
   StartSessionRequest,
 } from './types/contracts';
 import { WindowManager } from './windowManager';
-
-let windowManager: WindowManager;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -43,7 +42,7 @@ const historyPath = path.join(userDataPath, 'history');
 const logPath = path.join(userDataPath, 'wingman.log');
 const preloadPath = path.join(__dirname, '../preload/preload.js');
 const secureStore = new SecureStore(userDataPath);
-windowManager = new WindowManager(preloadPath);
+const windowManager = new WindowManager(preloadPath);
 let serverStartPromise: Promise<void> | null = null;
 let serverRestartTimeout: NodeJS.Timeout | null = null;
 
@@ -211,7 +210,10 @@ function registerShortcuts() {
 
 async function startSession(config: StartSessionRequest) {
   await ensureServerReady('idle');
-  const apiKey = config.apiKey?.trim() || (await secureStore.getApiKey());
+  const apiKey =
+    config.apiKey?.trim() ||
+    (await secureStore.getApiKey()) ||
+    process.env.GROQ_API_KEY?.trim();
   if (!apiKey) {
     throw new Error('A Groq API key is required before starting a session.');
   }
@@ -239,10 +241,12 @@ async function startSession(config: StartSessionRequest) {
   });
 
   windowManager.positionOverlay(config.overlayPreset);
+  windowManager.setOverlayOpacity(config.overlayOpacity);
   await secureStore.updateSettings({
     language: config.language,
     model: config.model,
     overlayPreset: config.overlayPreset,
+    overlayOpacity: config.overlayOpacity,
     historyEnabled: config.historyEnabled,
   });
 
@@ -288,8 +292,16 @@ function installIpcHandlers() {
   ipcMain.handle('app:get-settings', async () => secureStore.getSettings());
   ipcMain.handle(
     'app:save-settings',
-    async (_, updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>) =>
-      secureStore.updateSettings(updates),
+    async (_, updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>) => {
+      const nextSettings = await secureStore.updateSettings(updates);
+      if (updates.overlayPreset !== undefined) {
+        windowManager.positionOverlay(nextSettings.overlayPreset as OverlayPreset);
+      }
+      if (updates.overlayOpacity !== undefined) {
+        windowManager.setOverlayOpacity(nextSettings.overlayOpacity);
+      }
+      return nextSettings;
+    },
   );
   ipcMain.handle('app:save-api-key', async (_, apiKey: string) => {
     await secureStore.saveApiKey(apiKey);
@@ -336,6 +348,11 @@ function installIpcHandlers() {
       return appState;
     },
   );
+  ipcMain.handle('overlay:set-opacity', async (_, opacity: number) => {
+    windowManager.setOverlayOpacity(opacity);
+    updateState({});
+    return appState;
+  });
   ipcMain.handle('overlay:release-focus', async () => {
     windowManager.releaseOverlayFocus();
     return { ok: true };
@@ -358,7 +375,10 @@ async function createApp() {
   await bootstrapServer();
 
   const settings = await secureStore.getSettings();
-  await windowManager.createWindows(settings.overlayPreset as OverlayPreset);
+  await windowManager.createWindows(
+    settings.overlayPreset as OverlayPreset,
+    settings.overlayOpacity,
+  );
   updateState({
     sessionStatus: 'idle',
   });
@@ -446,7 +466,10 @@ process.on('unhandledRejection', (reason) => {
 app.on('activate', async () => {
   if (!windowManager.dashboardWindow && appState.serverReady) {
     const settings = await secureStore.getSettings();
-    await windowManager.createWindows(settings.overlayPreset as OverlayPreset);
+    await windowManager.createWindows(
+      settings.overlayPreset as OverlayPreset,
+      settings.overlayOpacity,
+    );
     updateState({});
   }
 });

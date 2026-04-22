@@ -22,6 +22,8 @@ const api: WingmanApi = {
     ipcRenderer.invoke('overlay:move', bounds),
   resizeOverlay: (size: { width: number; height: number }) =>
     ipcRenderer.invoke('overlay:resize', size),
+  setOverlayOpacity: (opacity: number) =>
+    ipcRenderer.invoke('overlay:set-opacity', opacity),
   releaseOverlayFocus: () => ipcRenderer.invoke('overlay:release-focus'),
   openHistoryFolder: () => ipcRenderer.invoke('history:open-folder'),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),

@@ -7,11 +7,12 @@
   "private": true,
   "scripts": {
     "start": "npm run dev",
+    "predev": "node scripts/select-dev-port.mjs",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:preload\" \"npm:dev:electron\"",
     "dev:renderer": "vite --config vite.renderer.config.ts",
     "dev:main": "vite build --watch --config vite.main.config.ts",
     "dev:preload": "vite build --watch --config vite.preload.config.ts",
-    "dev:electron": "wait-on tcp:5173 file:dist/main/main.js file:dist/preload/preload.js && nodemon --config nodemon.electron.json",
+    "dev:electron": "node scripts/electron-dev.mjs",
     "build": "npm run build:renderer && npm run build:main && npm run build:preload",
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "build:main": "vite build --config vite.main.config.ts",
@@ -49,6 +50,7 @@
     "wait-on": "^8.0.3"
   },
   "dependencies": {
+    "dotenv": "^16.6.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.0",

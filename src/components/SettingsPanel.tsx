@@ -30,7 +30,7 @@ export function SettingsPanel({
             </p>
             <p className="mt-3 text-sm text-slate-200">
               {settings.apiKeyStored
-                ? 'Saved securely with OS encryption.'
+                ? 'Available from secure storage or the .env file.'
                 : 'No Groq API key saved yet.'}
             </p>
           </div>
@@ -70,6 +70,21 @@ export function SettingsPanel({
               Ctrl+Shift+Space
             </p>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-6">
+        <h3 className="text-xl font-semibold text-slate-100">Overlay</h3>
+        <div className="mt-4 rounded-3xl border border-white/10 bg-slate-950/50 p-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-slate-200">Current transparency</p>
+            <p className="text-sm font-medium text-slate-100">
+              {Math.round(settings.overlayOpacity * 100)}%
+            </p>
+          </div>
+          <p className="mt-3 text-sm text-slate-400">
+            Adjust this from Session Setup, then save defaults to persist it.
+          </p>
         </div>
       </div>
 

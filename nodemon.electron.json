@@ -2,5 +2,5 @@
   "watch": ["dist/main", "dist/preload"],
   "ext": "js",
   "delay": "250",
-  "exec": "cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron ."
+  "exec": "node scripts/launch-electron.mjs"
 }

@@ -228,8 +228,8 @@ export class PythonServerManager {
       }
 
       return {
-        command: 'py',
-        args: ['-3', '-u', path.join(process.cwd(), 'python', 'server.py')],
+        command: path.join(process.cwd(), '.venv', 'Scripts', 'python.exe'),
+        args: ['-u', path.join(process.cwd(), 'python', 'server.py')],
       };
     }
 

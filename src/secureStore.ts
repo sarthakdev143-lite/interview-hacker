@@ -8,6 +8,7 @@ interface PersistedStore {
   language?: string;
   model?: string;
   overlayPreset?: OverlayPreset;
+  overlayOpacity?: number;
   historyEnabled?: boolean;
 }
 
@@ -15,6 +16,7 @@ const DEFAULT_SETTINGS: Omit<PublicSettings, 'apiKeyStored'> = {
   language: 'en',
   model: 'llama-3.3-70b-versatile',
   overlayPreset: 'bottom-right',
+  overlayOpacity: 0.95,
   historyEnabled: false,
 };
 
@@ -45,8 +47,9 @@ export class SecureStore {
       language: store.language ?? DEFAULT_SETTINGS.language,
       model: store.model ?? DEFAULT_SETTINGS.model,
       overlayPreset: store.overlayPreset ?? DEFAULT_SETTINGS.overlayPreset,
+      overlayOpacity: store.overlayOpacity ?? DEFAULT_SETTINGS.overlayOpacity,
       historyEnabled: store.historyEnabled ?? DEFAULT_SETTINGS.historyEnabled,
-      apiKeyStored: Boolean(store.encryptedApiKey),
+      apiKeyStored: Boolean(store.encryptedApiKey || process.env.GROQ_API_KEY?.trim()),
     };
   }
 

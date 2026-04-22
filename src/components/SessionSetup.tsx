@@ -46,7 +46,7 @@ interface SessionSetupProps {
   draft: SessionDraft;
   onDraftChange: (
     field: keyof SessionDraft,
-    value: string | boolean,
+    value: string | boolean | number,
   ) => void;
   onSaveApiKey: () => Promise<void>;
   onClearApiKey: () => Promise<void>;
@@ -226,6 +226,31 @@ export function SessionSetup({
             </label>
           </div>
 
+          <label className="mt-4 block space-y-3 rounded-[1.5rem] border border-white/10 bg-slate-950/40 px-4 py-4">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm font-semibold text-slate-100">
+                Overlay transparency
+              </span>
+              <span className="text-sm text-slate-400">
+                {Math.round(draft.overlayOpacity * 100)}%
+              </span>
+            </div>
+            <input
+              className="w-full accent-cyan-300"
+              max="1"
+              min="0.25"
+              onChange={(event) =>
+                onDraftChange('overlayOpacity', Number(event.target.value))
+              }
+              step="0.05"
+              type="range"
+              value={draft.overlayOpacity}
+            />
+            <p className="text-sm text-slate-400">
+              Lower values make the floating overlay more transparent.
+            </p>
+          </label>
+
           <div className="mt-4 space-y-3">
             {modelOptions.map((option) => (
               <button
@@ -271,7 +296,7 @@ export function SessionSetup({
               </p>
             </div>
             <span className="rounded-full border border-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-slate-500">
-              {settings.apiKeyStored ? 'Stored securely' : 'Not saved'}
+              {settings.apiKeyStored ? 'Available' : 'Not saved'}
             </span>
           </div>
 
@@ -279,7 +304,11 @@ export function SessionSetup({
             <input
               className="flex-1 rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-200 outline-none transition focus:border-storm/60 focus:ring-2 focus:ring-storm/20"
               onChange={(event) => onDraftChange('apiKeyInput', event.target.value)}
-              placeholder={settings.apiKeyStored ? 'Replace stored API key' : 'Paste your GROQ_API_KEY'}
+              placeholder={
+                settings.apiKeyStored
+                  ? 'Replace the active API key'
+                  : 'Paste your GROQ_API_KEY'
+              }
               type="password"
               value={draft.apiKeyInput}
             />

@@ -23,6 +23,7 @@ export interface StartSessionRequest {
   language: string;
   model: string;
   overlayPreset: OverlayPreset;
+  overlayOpacity: number;
   historyEnabled: boolean;
   apiKey?: string;
 }
@@ -31,6 +32,7 @@ export interface PublicSettings {
   language: string;
   model: string;
   overlayPreset: OverlayPreset;
+  overlayOpacity: number;
   historyEnabled: boolean;
   apiKeyStored: boolean;
 }
@@ -99,6 +101,7 @@ export interface WingmanApi {
   minimizeOverlay: () => Promise<AppState>;
   moveOverlay: (bounds: { x: number; y: number }) => Promise<AppState>;
   resizeOverlay: (size: { width: number; height: number }) => Promise<AppState>;
+  setOverlayOpacity: (opacity: number) => Promise<AppState>;
   releaseOverlayFocus: () => Promise<{ ok: true }>;
   openHistoryFolder: () => Promise<{ path: string }>;
   openExternal: (url: string) => Promise<{ ok: true }>;

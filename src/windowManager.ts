@@ -33,11 +33,11 @@ export class WindowManager {
 
   async createWindows(preset: OverlayPreset, overlayOpacity: number) {
     this.dashboardWindow = new BrowserWindow({
-      width: 900,
-      height: 700,
-      minWidth: 860,
-      minHeight: 620,
-      backgroundColor: '#05070c',
+      width: 1180,
+      height: 820,
+      minWidth: 980,
+      minHeight: 720,
+      backgroundColor: '#07111f',
       show: false,
       webPreferences: {
         preload: this.preloadPath,
@@ -55,7 +55,7 @@ export class WindowManager {
       skipTaskbar: true,
       focusable: false,
       fullscreenable: false,
-      hasShadow: false,
+      hasShadow: true,
       backgroundColor: '#00000000',
       webPreferences: {
         preload: this.preloadPath,
@@ -135,7 +135,7 @@ export class WindowManager {
       return;
     }
 
-    const normalizedWidth = Math.max(320, Math.min(width, 960));
+    const normalizedWidth = Math.max(360, Math.min(width, 1100));
     const normalizedHeight = Math.max(360, Math.min(height, 1200));
     this.overlayWindow.setSize(normalizedWidth, normalizedHeight);
   }

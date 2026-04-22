@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 import time
 from collections import deque
@@ -34,6 +35,66 @@ QUESTION_KEYWORDS = (
     "have you",
     "are you",
     "walk me through",
+    "talk me through",
+    "please share",
+    "share ",
+    "give me",
+)
+QUESTION_CLASSIFY_PREFIXES = QUESTION_KEYWORDS + (
+    "help me understand",
+    "talk about",
+    "speak to",
+)
+QUESTION_LEADING_FILLERS = (
+    "so ",
+    "and ",
+    "then ",
+    "okay ",
+    "ok ",
+    "alright ",
+    "all right ",
+    "well ",
+    "now ",
+    "next ",
+)
+QUESTION_TRAILING_FILLERS = (
+    "thank you",
+    "thank you so much",
+    "thanks",
+    "thanks so much",
+    "appreciate it",
+    "take your time",
+    "no rush",
+    "whenever you're ready",
+    "sounds good",
+    "all good",
+    "perfect",
+)
+ANSWER_LEAD_IN_PREFIXES = (
+    "sure",
+    "yeah",
+    "yes",
+    "absolutely",
+    "definitely",
+    "of course",
+    "i ",
+    "i'm ",
+    "i've ",
+    "i'd ",
+    "i was ",
+    "my ",
+    "we ",
+    "our ",
+    "in my ",
+    "at my ",
+    "for example",
+    "one example",
+)
+QUESTION_TRAILING_FILLER_RE = re.compile(
+    r"(?:[\s,.;:!?-]+(?:"
+    + "|".join(re.escape(phrase) for phrase in QUESTION_TRAILING_FILLERS)
+    + r"))+$",
+    re.IGNORECASE,
 )
 QUESTION_SETTLE_SECONDS = 0.9
 SILENCE_HANGOVER_SECONDS = 0.6
@@ -331,10 +392,13 @@ class SessionManager:
         if not normalized:
             return
 
+        is_question_candidate = self._looks_like_question(normalized)
+        if self._should_force_question_flush(normalized, is_question_candidate):
+            self._flush_pending_question_if_ready(force=True)
+
         self.status = "transcribing"
         self._broadcast_transcript({"type": "status", "status": "transcribing"})
 
-        is_question_candidate = self._looks_like_question(normalized)
         self.last_transcript_at = time.time()
         self.pending_utterance_segments.append(normalized)
 
@@ -359,9 +423,9 @@ class SessionManager:
         if not force and (time.time() - self.last_transcript_at) < QUESTION_SETTLE_SECONDS:
             return
 
-        utterance = " ".join(self.pending_utterance_segments).strip()
+        utterance = self._trim_question_tail(" ".join(self.pending_utterance_segments).strip())
         self.pending_utterance_segments = []
-        question = " ".join(self.pending_question_segments).strip()
+        question = self._trim_question_tail(" ".join(self.pending_question_segments).strip())
         self.pending_question_segments = []
         had_question_candidate = self.question_candidate_active
         should_classify = had_question_candidate or self._should_check_as_question(utterance)
@@ -373,6 +437,11 @@ class SessionManager:
             return
 
         prompt = question or utterance
+        if not prompt:
+            self.status = "listening"
+            self._broadcast_transcript({"type": "status", "status": "listening"})
+            return
+
         try:
             is_question = self.llm.is_question(prompt) if self.llm else False
         except Exception as error:
@@ -487,19 +556,92 @@ class SessionManager:
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:
-        lowered = f" {text.lower()} "
-        if text.strip().endswith("?"):
-            return True
-        return any(keyword in lowered for keyword in QUESTION_KEYWORDS)
-
-    @staticmethod
-    def _should_check_as_question(text: str) -> bool:
-        normalized = " ".join(text.split()).strip()
+        normalized = SessionManager._normalize_question_text(text)
         if not normalized:
             return False
 
-        word_count = len(normalized.split())
-        return normalized.endswith("?") or word_count >= 6
+        lowered = normalized.lower()
+        if normalized.endswith("?"):
+            return True
+        return any(lowered.startswith(keyword) for keyword in QUESTION_KEYWORDS)
+
+    @staticmethod
+    def _should_check_as_question(text: str) -> bool:
+        normalized = SessionManager._normalize_question_text(text)
+        if not normalized:
+            return False
+
+        lowered = normalized.lower()
+        return normalized.endswith("?") or any(
+            lowered.startswith(prefix) for prefix in QUESTION_CLASSIFY_PREFIXES
+        )
+
+    @staticmethod
+    def _normalize_question_text(text: str) -> str:
+        normalized = " ".join(text.split()).strip(" ,.;:!?-")
+        if not normalized:
+            return ""
+
+        lowered = normalized.lower()
+        while True:
+            matched_prefix = next(
+                (
+                    prefix
+                    for prefix in QUESTION_LEADING_FILLERS
+                    if lowered.startswith(prefix)
+                ),
+                None,
+            )
+            if not matched_prefix:
+                return normalized
+
+            normalized = normalized[len(matched_prefix) :].lstrip(" ,.;:!?-")
+            lowered = normalized.lower()
+
+    @staticmethod
+    def _trim_question_tail(text: str) -> str:
+        normalized = " ".join(text.split()).strip(" ,.;:!?-")
+        if not normalized:
+            return ""
+
+        while True:
+            trimmed = QUESTION_TRAILING_FILLER_RE.sub("", normalized).strip(" ,.;:!?-")
+            if trimmed == normalized:
+                return normalized
+            normalized = trimmed
+
+    @staticmethod
+    def _is_courtesy_segment(text: str) -> bool:
+        normalized = SessionManager._trim_question_tail(text)
+        if not normalized:
+            return True
+
+        lowered = normalized.lower()
+        return lowered in QUESTION_TRAILING_FILLERS
+
+    @staticmethod
+    def _looks_like_answer_lead_in(text: str) -> bool:
+        normalized = SessionManager._normalize_question_text(text)
+        if not normalized:
+            return False
+
+        lowered = normalized.lower()
+        return any(lowered.startswith(prefix) for prefix in ANSWER_LEAD_IN_PREFIXES)
+
+    def _should_force_question_flush(
+        self,
+        text: str,
+        is_question_candidate: bool,
+    ) -> bool:
+        return (
+            self.question_candidate_active
+            and bool(self.pending_question_segments)
+            and not is_question_candidate
+            and (
+                self._is_courtesy_segment(text)
+                or self._looks_like_answer_lead_in(text)
+            )
+        )
 
     def _runtime_is_active(self, runtime_id: int, stop_event: threading.Event) -> bool:
         return self.runtime_id == runtime_id and not stop_event.is_set()

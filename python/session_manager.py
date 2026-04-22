@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import queue
-import re
 import threading
 import time
 from collections import deque
@@ -20,89 +19,65 @@ QUESTION_KEYWORDS = (
     "how ",
     "why ",
     "what ",
-    "when ",
     "where ",
-    "who ",
+    "when ",
     "which ",
+    "who ",
     "tell me",
     "explain",
     "describe",
     "can you",
     "could you",
-    "would you",
+    "walk me through",
+    "what's",
+    "what is",
+    "have you",
     "do you",
     "did you",
-    "have you",
+    "would you",
+    "will you",
     "are you",
-    "walk me through",
-    "talk me through",
-    "please share",
-    "share ",
+    "were you",
+    "is there",
+    "is it",
     "give me",
-)
-QUESTION_CLASSIFY_PREFIXES = QUESTION_KEYWORDS + (
-    "help me understand",
     "talk about",
-    "speak to",
+    "thoughts on",
+    "opinion on",
+    "familiar with",
+    "experience with",
+    "know about",
 )
-QUESTION_LEADING_FILLERS = (
-    "so ",
-    "and ",
-    "then ",
-    "okay ",
-    "ok ",
-    "alright ",
-    "all right ",
-    "well ",
-    "now ",
-    "next ",
-)
-QUESTION_TRAILING_FILLERS = (
-    "thank you",
-    "thank you so much",
-    "thanks",
-    "thanks so much",
-    "appreciate it",
-    "take your time",
-    "no rush",
-    "whenever you're ready",
-    "sounds good",
-    "all good",
-    "perfect",
-)
-ANSWER_LEAD_IN_PREFIXES = (
-    "sure",
-    "yeah",
-    "yes",
-    "absolutely",
-    "definitely",
-    "of course",
-    "i ",
-    "i'm ",
-    "i've ",
-    "i'd ",
-    "i was ",
-    "my ",
-    "we ",
-    "our ",
-    "in my ",
-    "at my ",
-    "for example",
-    "one example",
-)
-QUESTION_TRAILING_FILLER_RE = re.compile(
-    r"(?:[\s,.;:!?-]+(?:"
-    + "|".join(re.escape(phrase) for phrase in QUESTION_TRAILING_FILLERS)
-    + r"))+$",
-    re.IGNORECASE,
-)
-QUESTION_SETTLE_SECONDS = 0.9
-SILENCE_HANGOVER_SECONDS = 0.6
+
+# Wait after the last transcript chunk before deciding the speech burst is
+# "done" and evaluating it for question-ness.  1.5s balances between not
+# firing mid-sentence and keeping latency low.
+QUESTION_SETTLE_SECONDS = 1.5
+
+# Don't flush the transcriber until the speaker has been silent for at
+# least 1.0s.  Avoids sending half-sentences to Whisper while keeping
+# response time snappy.
+SILENCE_HANGOVER_SECONDS = 1.0
+
 PCM_BYTES_PER_SECOND = 16000 * 2
-PRE_ROLL_SECONDS = 0.45
+PRE_ROLL_SECONDS = 0.6          # Slightly more pre-roll context
 SPEECH_RMS_THRESHOLD = 28
 SPEECH_RMS_MULTIPLIER = 1.8
 NOISE_FLOOR_SMOOTHING = 0.08
+
+# Maximum number of transcript segments to join into a single question
+# candidate.  Protects against runaway concatenation during long speech.
+MAX_QUESTION_SEGMENTS = 20
+
+# Minimum character length for a transcript segment to be considered for
+# question candidacy.  Single-word noise like "Hmm" is excluded.
+MIN_SEGMENT_CHARS = 6
+
+# Number of recent non-question segments to keep as lookback context.
+# When a question starts mid-speech ("Let me explain the project... so how
+# would you design this?"), these segments provide the preceding context so
+# the full question is captured even if a brief silence split them apart.
+CONTEXT_LOOKBACK_SEGMENTS = 6
 
 
 class SessionManager:
@@ -112,7 +87,6 @@ class SessionManager:
         self.transcript_subscribers: set[queue.Queue] = set()
         self.answer_subscribers: set[queue.Queue] = set()
         self.state_lock = threading.Lock()
-        self.runtime_id = 0
         self._reset_runtime()
 
     def _reset_runtime(self):
@@ -127,11 +101,14 @@ class SessionManager:
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self.answer_worker_thread: threading.Thread | None = None
-        self.pending_utterance_segments: list[str] = []
         self.pending_question_segments: list[str] = []
-        self.question_candidate_active = False
         self.last_transcript_at = 0.0
         self.last_voice_activity_at = 0.0
+        # Rolling lookback of recent segments from non-question flushes.
+        # Gives context when a question starts after a brief silence.
+        self._recent_context: deque[str] = deque(
+            maxlen=CONTEXT_LOOKBACK_SEGMENTS
+        )
         self.speech_active = False
         self.pre_roll_chunks: deque[bytes] = deque()
         self.pre_roll_buffered_bytes = 0
@@ -139,6 +116,9 @@ class SessionManager:
         self.started_at = None
         self.exchanges: list[dict] = []
         self.history_enabled = False
+        # Tracks the last question text we sent to the answer queue so we
+        # never enqueue the same question twice in quick succession.
+        self._last_enqueued_question: str = ""
 
     def start_session(
         self,
@@ -153,8 +133,6 @@ class SessionManager:
         self.stop_session()
 
         with self.state_lock:
-            self.runtime_id += 1
-            runtime_id = self.runtime_id
             self.session_id = str(uuid4())
             self.session = {
                 "resume_text": resume_text,
@@ -172,13 +150,11 @@ class SessionManager:
                 self.capture.start()
                 self.worker_thread = threading.Thread(
                     target=self._transcription_loop,
-                    args=(runtime_id, self.stop_event, self.audio_queue),
                     daemon=True,
                 )
                 self.worker_thread.start()
                 self.answer_worker_thread = threading.Thread(
                     target=self._answer_loop,
-                    args=(runtime_id, self.stop_event, self.answer_queue),
                     daemon=True,
                 )
                 self.answer_worker_thread.start()
@@ -217,7 +193,6 @@ class SessionManager:
         self.status = "stopped"
         self._broadcast_transcript({"type": "status", "status": "stopped"})
         self._broadcast_answer({"type": "status", "status": "stopped"})
-        self.runtime_id += 1
         self._reset_runtime()
         return {"status": "stopped"}
 
@@ -290,15 +265,10 @@ class SessionManager:
                 pass
             self.audio_queue.put_nowait(audio_chunk)
 
-    def _transcription_loop(
-        self,
-        runtime_id: int,
-        stop_event: threading.Event,
-        audio_queue: queue.Queue[bytes],
-    ):
-        while not stop_event.is_set():
+    def _transcription_loop(self):
+        while not self.stop_event.is_set():
             try:
-                audio_chunk = audio_queue.get(timeout=0.25)
+                audio_chunk = self.audio_queue.get(timeout=0.25)
             except queue.Empty:
                 self._flush_transcriber_if_ready()
                 self._flush_pending_question_if_ready()
@@ -312,38 +282,23 @@ class SessionManager:
             self._flush_transcriber_if_ready()
             self._flush_pending_question_if_ready()
 
-        if self._runtime_is_active(runtime_id, stop_event):
-            self._flush_transcriber_if_ready(force=True)
-            self._flush_pending_question_if_ready(force=True)
+        self._flush_transcriber_if_ready(force=True)
+        self._flush_pending_question_if_ready(force=True)
 
-    def _answer_loop(
-        self,
-        runtime_id: int,
-        stop_event: threading.Event,
-        answer_queue: queue.Queue[tuple[str, queue.Queue | None]],
-    ):
+    def _answer_loop(self):
         while True:
-            if stop_event.is_set() and answer_queue.empty():
+            if self.stop_event.is_set() and self.answer_queue.empty():
                 return
 
             try:
-                prompt, local_queue = answer_queue.get(timeout=0.25)
+                prompt, local_queue = self.answer_queue.get(timeout=0.25)
             except queue.Empty:
                 continue
 
             try:
-                llm = self.llm
-                session = dict(self.session)
-                self._stream_answer_worker(
-                    runtime_id,
-                    stop_event,
-                    llm,
-                    session,
-                    prompt,
-                    local_queue,
-                )
+                self._stream_answer_worker(prompt, local_queue)
             finally:
-                answer_queue.task_done()
+                self.answer_queue.task_done()
 
     def _process_audio_chunk(self, audio_chunk: bytes):
         if not self.transcriber:
@@ -388,129 +343,109 @@ class SessionManager:
             self._clear_pre_roll_buffer()
 
     def _publish_transcript(self, text: str):
+        # Normalise whitespace and drop very short noise fragments.
         normalized = " ".join(text.split()).strip()
-        if not normalized:
+        if not normalized or len(normalized) < MIN_SEGMENT_CHARS:
             return
-
-        is_question_candidate = self._looks_like_question(normalized)
-        if self._should_force_question_flush(normalized, is_question_candidate):
-            self._flush_pending_question_if_ready(force=True)
 
         self.status = "transcribing"
         self._broadcast_transcript({"type": "status", "status": "transcribing"})
 
         self.last_transcript_at = time.time()
-        self.pending_utterance_segments.append(normalized)
 
-        if is_question_candidate:
-            self.question_candidate_active = True
-
-        if self.question_candidate_active:
+        if len(self.pending_question_segments) < MAX_QUESTION_SEGMENTS:
             self.pending_question_segments.append(normalized)
+
+        is_q = self._looks_like_question(normalized)
+        print(f"[wingman] Segment: {normalized!r}  question_signal={is_q}  pending={len(self.pending_question_segments)}")
 
         self._broadcast_transcript(
             {
                 "type": "transcript",
                 "text": normalized,
-                "is_question": is_question_candidate,
+                "is_question": is_q,
             }
         )
 
     def _flush_pending_question_if_ready(self, force: bool = False):
-        if not self.pending_utterance_segments:
+        if not self.pending_question_segments:
             return
 
         if not force and (time.time() - self.last_transcript_at) < QUESTION_SETTLE_SECONDS:
             return
 
-        utterance = self._trim_question_tail(" ".join(self.pending_utterance_segments).strip())
-        self.pending_utterance_segments = []
-        question = self._trim_question_tail(" ".join(self.pending_question_segments).strip())
+        all_segments = list(self._recent_context) + self.pending_question_segments
+        question = " ".join(all_segments).strip()
+
+        for seg in self.pending_question_segments:
+            self._recent_context.append(seg)
         self.pending_question_segments = []
-        had_question_candidate = self.question_candidate_active
-        should_classify = had_question_candidate or self._should_check_as_question(utterance)
-        self.question_candidate_active = False
 
-        if not should_classify:
+        if not self._looks_like_question(question):
+            print(f"[wingman] Flush: no question signal in {question!r:.120}")
             self.status = "listening"
             self._broadcast_transcript({"type": "status", "status": "listening"})
             return
 
-        prompt = question or utterance
-        if not prompt:
+        if question == self._last_enqueued_question:
+            print(f"[wingman] Flush: duplicate, skipping")
             self.status = "listening"
             self._broadcast_transcript({"type": "status", "status": "listening"})
             return
 
+        # Run LLM classification in a daemon thread so it never blocks
+        # the transcription loop (the old inline call froze audio
+        # processing for 1-3 s and caused chunks to be dropped).
+        print(f"[wingman] Flush: classifying question: {question!r:.200}")
+        threading.Thread(
+            target=self._classify_and_enqueue_question,
+            args=(question,),
+            daemon=True,
+        ).start()
+
+    def _classify_and_enqueue_question(self, question: str):
+        """LLM-classify *question* off the transcription thread."""
         try:
-            is_question = self.llm.is_question(prompt) if self.llm else False
+            is_question = self.llm.is_question(question) if self.llm else False
         except Exception as error:
-            print(f"[wingman] Question classification failed, using heuristic: {error}")
-            is_question = had_question_candidate or self._looks_like_question(prompt)
+            print(f"[wingman] Classification failed, assuming yes: {error}")
+            is_question = True
 
         if not is_question:
+            print(f"[wingman] LLM says NOT a question: {question!r:.120}")
             self.status = "listening"
             self._broadcast_transcript({"type": "status", "status": "listening"})
             return
 
-        self.answer_queue.put((prompt, None))
+        print(f"[wingman] ✅ QUESTION DETECTED: {question!r:.200}")
+        self._recent_context.clear()
+        self._last_enqueued_question = question
+        self.answer_queue.put((question, None))
 
-    def _stream_answer_worker(
-        self,
-        runtime_id: int,
-        stop_event: threading.Event,
-        llm: LLMClient | None,
-        session: dict,
-        prompt: str,
-        local_queue: queue.Queue | None,
-    ):
-        if not llm or not self._runtime_is_active(runtime_id, stop_event):
+    def _stream_answer_worker(self, prompt: str, local_queue: queue.Queue | None):
+        if not self.llm:
             return
 
         self.status = "thinking"
-        self._fan_out(
-            runtime_id,
-            stop_event,
-            {"type": "status", "status": "thinking"},
-            local_queue,
-        )
+        self._fan_out({"type": "status", "status": "thinking"}, local_queue)
         tokens: list[str] = []
 
         try:
-            for token in llm.stream_answer(prompt, session):
-                if not self._runtime_is_active(runtime_id, stop_event):
+            for token in self.llm.stream_answer(prompt, self.session):
+                if self.stop_event.is_set():
                     break
 
                 if self.status != "answering":
                     self.status = "answering"
-                    self._fan_out(
-                        runtime_id,
-                        stop_event,
-                        {"type": "status", "status": "answering"},
-                        local_queue,
-                    )
+                    self._fan_out({"type": "status", "status": "answering"}, local_queue)
 
                 tokens.append(token)
-                self._fan_out(
-                    runtime_id,
-                    stop_event,
-                    {"type": "token", "text": token},
-                    local_queue,
-                )
+                self._fan_out({"type": "token", "text": token}, local_queue)
         except Exception as error:
             fallback = "I lost the answer stream. Please ask the question again."
             print(f"[wingman] Answer generation failed: {error}")
-            if self._runtime_is_active(runtime_id, stop_event):
-                tokens = [fallback]
-                self._fan_out(
-                    runtime_id,
-                    stop_event,
-                    {"type": "token", "text": fallback},
-                    local_queue,
-                )
-
-        if not self._runtime_is_active(runtime_id, stop_event):
-            return
+            tokens = [fallback]
+            self._fan_out({"type": "token", "text": fallback}, local_queue)
 
         answer = "".join(tokens).strip()
         if answer:
@@ -523,19 +458,14 @@ class SessionManager:
             )
 
         self.status = "done"
-        self._fan_out(runtime_id, stop_event, {"type": "done"}, local_queue)
+        self._fan_out({"type": "done"}, local_queue)
         self._broadcast_transcript({"type": "status", "status": "listening"})
         self.status = "listening"
+        # Reset dedup guard after answer is delivered so the same question
+        # CAN be asked again intentionally in a later turn.
+        self._last_enqueued_question = ""
 
-    def _fan_out(
-        self,
-        runtime_id: int,
-        stop_event: threading.Event,
-        payload: dict,
-        local_queue: queue.Queue | None,
-    ):
-        if not self._runtime_is_active(runtime_id, stop_event):
-            return
+    def _fan_out(self, payload: dict, local_queue: queue.Queue | None):
         self._broadcast_answer(payload)
         if local_queue is not None:
             local_queue.put(payload)
@@ -556,95 +486,10 @@ class SessionManager:
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:
-        normalized = SessionManager._normalize_question_text(text)
-        if not normalized:
-            return False
-
-        lowered = normalized.lower()
-        if normalized.endswith("?"):
+        lowered = f" {text.lower()} "
+        if text.strip().endswith("?"):
             return True
-        return any(lowered.startswith(keyword) for keyword in QUESTION_KEYWORDS)
-
-    @staticmethod
-    def _should_check_as_question(text: str) -> bool:
-        normalized = SessionManager._normalize_question_text(text)
-        if not normalized:
-            return False
-
-        lowered = normalized.lower()
-        return normalized.endswith("?") or any(
-            lowered.startswith(prefix) for prefix in QUESTION_CLASSIFY_PREFIXES
-        )
-
-    @staticmethod
-    def _normalize_question_text(text: str) -> str:
-        normalized = " ".join(text.split()).strip(" ,.;:!?-")
-        if not normalized:
-            return ""
-
-        lowered = normalized.lower()
-        while True:
-            matched_prefix = next(
-                (
-                    prefix
-                    for prefix in QUESTION_LEADING_FILLERS
-                    if lowered.startswith(prefix)
-                ),
-                None,
-            )
-            if not matched_prefix:
-                return normalized
-
-            normalized = normalized[len(matched_prefix) :].lstrip(" ,.;:!?-")
-            lowered = normalized.lower()
-
-    @staticmethod
-    def _trim_question_tail(text: str) -> str:
-        normalized = " ".join(text.split()).strip(" ,.;:!?-")
-        if not normalized:
-            return ""
-
-        while True:
-            trimmed = QUESTION_TRAILING_FILLER_RE.sub("", normalized).strip(" ,.;:!?-")
-            if trimmed == normalized:
-                return normalized
-            normalized = trimmed
-
-    @staticmethod
-    def _is_courtesy_segment(text: str) -> bool:
-        normalized = SessionManager._trim_question_tail(text)
-        if not normalized:
-            return True
-
-        lowered = normalized.lower()
-        return lowered in QUESTION_TRAILING_FILLERS
-
-    @staticmethod
-    def _looks_like_answer_lead_in(text: str) -> bool:
-        normalized = SessionManager._normalize_question_text(text)
-        if not normalized:
-            return False
-
-        lowered = normalized.lower()
-        return any(lowered.startswith(prefix) for prefix in ANSWER_LEAD_IN_PREFIXES)
-
-    def _should_force_question_flush(
-        self,
-        text: str,
-        is_question_candidate: bool,
-    ) -> bool:
-        return (
-            self.question_candidate_active
-            and bool(self.pending_question_segments)
-            and not is_question_candidate
-            and (
-                self._is_courtesy_segment(text)
-                or self._looks_like_answer_lead_in(text)
-            )
-        )
-
-    def _runtime_is_active(self, runtime_id: int, stop_event: threading.Event) -> bool:
-        return self.runtime_id == runtime_id and not stop_event.is_set()
+        return any(keyword in lowered for keyword in QUESTION_KEYWORDS)
 
     @staticmethod
     def _chunk_rms(audio_chunk: bytes) -> float:

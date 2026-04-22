@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import type {
   AnswerEventPayload,
   SessionStatus,
@@ -10,7 +10,18 @@ export interface TranscriptLine {
   isQuestion: boolean;
 }
 
-export function useStream(serverPort: number | null) {
+function resetAnswerTimeout(answerTimeout: MutableRefObject<number | null>) {
+  if (answerTimeout.current) {
+    window.clearTimeout(answerTimeout.current);
+    answerTimeout.current = null;
+  }
+}
+
+export function useStream(
+  serverPort: number | null,
+  sessionId: string | null,
+  sessionStatus: SessionStatus,
+) {
   const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
   const [answer, setAnswer] = useState('');
   const [status, setStatus] = useState<SessionStatus>('idle');
@@ -18,18 +29,22 @@ export function useStream(serverPort: number | null) {
   const answerTimeout = useRef<number | null>(null);
 
   useEffect(() => {
-    return () => {
-      if (answerTimeout.current) {
-        window.clearTimeout(answerTimeout.current);
-      }
-    };
+    return () => resetAnswerTimeout(answerTimeout);
   }, []);
 
   useEffect(() => {
     if (!serverPort) {
+      resetAnswerTimeout(answerTimeout);
+      setTranscriptLines([]);
+      setAnswer('');
+      setStatus('idle');
       return;
     }
 
+    resetAnswerTimeout(answerTimeout);
+    setTranscriptLines([]);
+    setAnswer('');
+    setStatus(sessionId ? 'listening' : sessionStatus === 'stopped' ? 'stopped' : 'idle');
     setStreamError(null);
     const transcriptSource = new EventSource(
       `http://127.0.0.1:${serverPort}/transcript/stream`,
@@ -61,6 +76,10 @@ export function useStream(serverPort: number | null) {
             isQuestion: Boolean(payload.is_question),
           },
         ]);
+        if (payload.is_question) {
+          resetAnswerTimeout(answerTimeout);
+          setAnswer('');
+        }
         setStatus(payload.is_question ? 'thinking' : 'transcribing');
       }
     };
@@ -84,9 +103,7 @@ export function useStream(serverPort: number | null) {
 
       if (payload.type === 'done') {
         setStatus('done');
-        if (answerTimeout.current) {
-          window.clearTimeout(answerTimeout.current);
-        }
+        resetAnswerTimeout(answerTimeout);
         answerTimeout.current = window.setTimeout(() => {
           setStatus('idle');
         }, 30000);
@@ -101,10 +118,29 @@ export function useStream(serverPort: number | null) {
     answerSource.onerror = handleError;
 
     return () => {
+      resetAnswerTimeout(answerTimeout);
       transcriptSource.close();
       answerSource.close();
     };
-  }, [serverPort]);
+  }, [serverPort, sessionId, sessionStatus]);
+
+  useEffect(() => {
+    if (sessionStatus === 'starting') {
+      resetAnswerTimeout(answerTimeout);
+      setTranscriptLines([]);
+      setAnswer('');
+      setStatus('starting');
+      setStreamError(null);
+      return;
+    }
+
+    if (sessionStatus === 'stopped' || sessionStatus === 'idle' || sessionStatus === 'ready') {
+      resetAnswerTimeout(answerTimeout);
+      setTranscriptLines([]);
+      setAnswer('');
+      setStatus(sessionStatus);
+    }
+  }, [sessionStatus]);
 
   async function submitManualPrompt(prompt: string) {
     if (!serverPort || !prompt.trim()) {

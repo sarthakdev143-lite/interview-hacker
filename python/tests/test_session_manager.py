@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -19,6 +20,22 @@ from session_manager import SessionManager
 class FakeLLM:
     def is_question(self, transcript: str) -> bool:
         return transcript.lower().startswith("what")
+
+
+class PromptDrivenLLM:
+    def is_question(self, transcript: str) -> bool:
+        return transcript.lower().startswith("please share")
+
+
+class BlockingAnswerLLM:
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def stream_answer(self, question: str, session: dict):
+        self.started.set()
+        self.release.wait(timeout=2.0)
+        yield "stale token"
 
 
 class FakeTranscriber:
@@ -86,6 +103,48 @@ class SessionManagerTests(unittest.TestCase):
         question, local_queue = self.manager.answer_queue.get_nowait()
         self.assertEqual(question, "What is React")
         self.assertIsNone(local_queue)
+
+    def test_long_utterance_without_keyword_still_gets_classified(self):
+        self.manager.llm = PromptDrivenLLM()
+
+        self.manager._publish_transcript("Please share one production incident you solved")
+        self.manager._flush_pending_question_if_ready(force=True)
+
+        question, local_queue = self.manager.answer_queue.get_nowait()
+        self.assertEqual(question, "Please share one production incident you solved")
+        self.assertIsNone(local_queue)
+
+    def test_stale_answer_worker_does_not_emit_after_stop(self):
+        llm = BlockingAnswerLLM()
+        subscriber: queue.Queue = queue.Queue()
+        self.manager.answer_subscribers.add(subscriber)
+        self.manager.llm = llm
+        self.manager.session = {"resume_text": "", "extra_context": ""}
+        self.manager.runtime_id = 1
+
+        worker = threading.Thread(
+            target=self.manager._stream_answer_worker,
+            args=(1, self.manager.stop_event, llm, dict(self.manager.session), "Old question", None),
+            daemon=True,
+        )
+        worker.start()
+
+        self.assertEqual(
+            subscriber.get(timeout=1.0),
+            {"type": "status", "status": "thinking"},
+        )
+        self.assertTrue(llm.started.wait(timeout=1.0))
+
+        stale_stop_event = self.manager.stop_event
+        stale_stop_event.set()
+        self.manager.runtime_id = 2
+        self.manager.stop_event = threading.Event()
+        llm.release.set()
+
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(subscriber.empty())
+        self.assertEqual(self.manager.exchanges, [])
 
     def test_quiet_speech_still_reaches_transcriber(self):
         self.manager.transcriber = FakeTranscriber("")

@@ -29,7 +29,11 @@ const navItems = [
 function DashboardApp() {
   const location = useLocation();
   const session = useSession();
-  const stream = useStream(session.appState.serverPort);
+  const stream = useStream(
+    session.appState.serverPort,
+    session.appState.currentSessionId,
+    session.appState.sessionStatus,
+  );
   const isOverlay = location.pathname === '/overlay';
 
   useEffect(() => {

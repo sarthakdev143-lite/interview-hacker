@@ -10,6 +10,9 @@ const distDir = path.join(pythonDir, 'dist');
 const buildDir = path.join(pythonDir, 'build');
 const specFile = path.join(pythonDir, 'wingman-server.spec');
 
+// Resolve the Python executable.
+// Using `shell: false` so that args with spaces are passed as-is to the
+// process (no shell word-splitting on paths like "My Codes/...").
 const command =
   process.env.WINGMAN_PYTHON_BIN ??
   (process.platform === 'win32' ? 'py' : 'python3');
@@ -32,7 +35,8 @@ const args = [
 const result = spawnSync(command, args, {
   cwd: repoRoot,
   stdio: 'inherit',
-  shell: process.platform === 'win32',
+  // shell: false — pass args as an array so paths with spaces are safe
+  shell: false,
 });
 
 if (result.status !== 0) {

@@ -18,32 +18,32 @@ class Transcriber:
         self.model = model
         self.language = language
         self.buffer: list[bytes] = []
-        # Buffer 2.0s of audio before sending to Whisper.  Long enough for
-        # decent transcription quality, short enough so that questions spoken
-        # in 1-3 seconds are transcribed quickly via feed() rather than only
-        # after a silence-triggered flush.
+
+        # Buffer 2.0 s of audio before sending to Whisper.  Long enough for
+        # decent accuracy; short enough so mid-sentence questions still get
+        # transcribed via feed() rather than only after a silence flush.
         self.buffer_duration = 2.0
-        # Minimum audio length required for flush().  0.8s prevents sending
-        # very short noise blobs to Whisper while still allowing short
-        # utterances ("What?", "How?") to be captured.
+
+        # Minimum audio for flush().  0.8 s prevents tiny noise blobs from
+        # being sent to Whisper (they produce garbage text) while still
+        # allowing short questions like "What?" to be captured.
         self.min_flush_duration = 0.8
+
         self.sample_rate = 16000
         self.bytes_per_second = self.sample_rate * 2
         self.buffered_bytes = 0
+
         # Previous transcript fed back to Whisper as a prompt so it has
-        # context across chunks — dramatically improves accuracy.
-        self._prev_transcript = ""
+        # cross-chunk continuity — dramatically improves word accuracy.
+        self._prev_transcript: str = ""
 
     def feed(self, audio_chunk: bytes) -> Optional[str]:
         if not audio_chunk:
             return None
-
         self.buffer.append(audio_chunk)
         self.buffered_bytes += len(audio_chunk)
-
         if self.buffered_bytes < self.bytes_per_second * self.buffer_duration:
             return None
-
         return self.transcribe_buffer()
 
     def flush(self) -> Optional[str]:
@@ -51,7 +51,6 @@ class Transcriber:
             self.buffer.clear()
             self.buffered_bytes = 0
             return None
-
         return self.transcribe_buffer()
 
     def has_buffered_audio(self) -> bool:
@@ -69,14 +68,14 @@ class Transcriber:
             wav_file.setframerate(self.sample_rate)
             wav_file.writeframes(audio_bytes)
 
-        kwargs = dict(
+        kwargs: dict = dict(
             file=("audio.wav", wav_buffer.getvalue()),
             model=self.model,
             language=self.language,
             response_format="text",
             temperature=0.0,
         )
-        # Feed previous transcript as prompt for cross-chunk continuity.
+        # Feed previous transcript as a prompt for better cross-chunk accuracy.
         if self._prev_transcript:
             kwargs["prompt"] = self._prev_transcript[-500:]
 
@@ -85,9 +84,10 @@ class Transcriber:
         if isinstance(response, str):
             text = response.strip()
         else:
-            text = str(getattr(response, "text", "")).strip() or None
+            text = str(getattr(response, "text", "")).strip()
 
         if text:
             self._prev_transcript = text
             print(f"[wingman] Whisper: {text}")
-        return text
+
+        return text or None

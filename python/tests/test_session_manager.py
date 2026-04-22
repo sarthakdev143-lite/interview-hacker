@@ -27,6 +27,11 @@ class PromptDrivenLLM:
         return transcript.lower().startswith("please share")
 
 
+class ExplodingClassifierLLM:
+    def is_question(self, transcript: str) -> bool:
+        raise AssertionError("Classifier should not run for non-question chatter")
+
+
 class BlockingAnswerLLM:
     def __init__(self):
         self.started = threading.Event()
@@ -113,6 +118,40 @@ class SessionManagerTests(unittest.TestCase):
         question, local_queue = self.manager.answer_queue.get_nowait()
         self.assertEqual(question, "Please share one production incident you solved")
         self.assertIsNone(local_queue)
+
+    def test_trailing_courtesy_is_removed_from_detected_question(self):
+        self.manager.llm = FakeLLM()
+
+        self.manager._publish_transcript("What is React")
+        self.manager._publish_transcript("Thank you")
+        self.manager._flush_pending_question_if_ready(force=True)
+
+        question, local_queue = self.manager.answer_queue.get_nowait()
+        self.assertEqual(question, "What is React")
+        self.assertIsNone(local_queue)
+
+    def test_answer_lead_in_flushes_question_before_candidate_response(self):
+        self.manager.llm = FakeLLM()
+
+        self.manager._publish_transcript("What is React")
+        self.manager._publish_transcript("Sure I used it on a dashboard migration")
+
+        question, local_queue = self.manager.answer_queue.get_nowait()
+        self.assertEqual(question, "What is React")
+        self.assertIsNone(local_queue)
+        self.assertEqual(
+            self.manager.pending_utterance_segments,
+            ["Sure I used it on a dashboard migration"],
+        )
+
+    def test_long_non_question_chatter_is_not_sent_to_classifier(self):
+        self.manager.llm = ExplodingClassifierLLM()
+
+        self.manager._publish_transcript("Thank you so much for joining us today everyone")
+        self.manager._flush_pending_question_if_ready(force=True)
+
+        with self.assertRaises(queue.Empty):
+            self.manager.answer_queue.get_nowait()
 
     def test_stale_answer_worker_does_not_emit_after_stop(self):
         llm = BlockingAnswerLLM()

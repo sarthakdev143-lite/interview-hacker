@@ -53,6 +53,17 @@ QUESTION_KEYWORDS = (
     "know about",
 )
 
+PROMPT_LEAD_INS = (
+    "please share",
+    "please explain",
+    "please describe",
+    "please tell",
+    "please walk",
+    "share one",
+    "share a",
+    "share an",
+)
+
 # Phrases that strongly suggest the *candidate* is beginning their own answer.
 # When one of these appears while a question candidate is pending, we flush
 # the question immediately rather than waiting for the settle timer.
@@ -122,6 +133,8 @@ class SessionManager:
         self.transcript_subscribers: set[queue.Queue] = set()
         self.answer_subscribers: set[queue.Queue] = set()
         self.state_lock = threading.Lock()
+        self.subscriber_lock = threading.Lock()
+        self.runtime_id: int = 0
         self._reset_runtime()
 
     # ------------------------------------------------------------------
@@ -138,9 +151,6 @@ class SessionManager:
         self.audio_queue: queue.Queue[bytes] = queue.Queue(maxsize=512)
         self.answer_queue: queue.Queue[tuple[str, queue.Queue | None]] = queue.Queue()
         self.stop_event = threading.Event()
-        # Monotonically incrementing ID — a stale answer-worker can detect
-        # that the session was reset underneath it.
-        self.runtime_id: int = 0
         self.worker_thread: threading.Thread | None = None
         self.answer_worker_thread: threading.Thread | None = None
 
@@ -179,6 +189,7 @@ class SessionManager:
         self.stop_session()
 
         with self.state_lock:
+            self.runtime_id += 1
             self.session_id = str(uuid4())
             self.session = {
                 "resume_text": resume_text,
@@ -203,6 +214,8 @@ class SessionManager:
                 )
                 self.answer_worker_thread.start()
             except Exception:
+                if self.capture is not None:
+                    self.capture.stop()
                 self._reset_runtime()
                 raise
 
@@ -214,11 +227,8 @@ class SessionManager:
         worker = self.worker_thread
         answer_worker = self.answer_worker_thread
         history_enabled = self.history_enabled
-        session_snapshot = {
-            "session_id": self.session_id,
-            "started_at": self.started_at,
-            "exchanges": list(self.exchanges),
-        }
+        session_id = self.session_id
+        started_at = self.started_at
 
         self.stop_event.set()
 
@@ -230,6 +240,11 @@ class SessionManager:
             answer_worker.join(timeout=2.0)
 
         if history_enabled:
+            session_snapshot = {
+                "session_id": session_id,
+                "started_at": started_at,
+                "exchanges": list(self.exchanges),
+            }
             self._save_history(session_snapshot)
 
         self.status = "stopped"
@@ -250,13 +265,15 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def subscribe_transcripts(self) -> Generator[dict, None, None]:
-        subscriber: queue.Queue = queue.Queue()
-        self.transcript_subscribers.add(subscriber)
+        subscriber: queue.Queue = queue.Queue(maxsize=256)
+        with self.subscriber_lock:
+            self.transcript_subscribers.add(subscriber)
         return self._yield_queue(subscriber, kind="transcript")
 
     def subscribe_answers(self) -> Generator[dict, None, None]:
-        subscriber: queue.Queue = queue.Queue()
-        self.answer_subscribers.add(subscriber)
+        subscriber: queue.Queue = queue.Queue(maxsize=256)
+        with self.subscriber_lock:
+            self.answer_subscribers.add(subscriber)
         return self._yield_queue(subscriber, kind="answer")
 
     def list_history(self) -> list:
@@ -298,7 +315,8 @@ class SessionManager:
                     yield {"type": "heartbeat"}
         finally:
             if collection is not None:
-                collection.discard(subscriber)
+                with self.subscriber_lock:
+                    collection.discard(subscriber)
 
     # ------------------------------------------------------------------
     # Audio ingestion
@@ -430,6 +448,7 @@ class SessionManager:
         self.last_transcript_at = time.time()
 
         has_question_signal = self._looks_like_question(normalized)
+        has_prompt_signal = self._looks_like_interview_prompt(normalized)
         has_answer_lead_in = self._looks_like_candidate_answer(normalized)
 
         if self.pending_question_segments and has_answer_lead_in:
@@ -437,7 +456,7 @@ class SessionManager:
             print(f"[wingman] Answer lead-in, early flush: {normalized!r}")
             self._flush_pending_question_if_ready(force=True)
             self.pending_utterance_segments.append(normalized)
-        elif has_question_signal or self.pending_question_segments:
+        elif has_question_signal or has_prompt_signal or self.pending_question_segments:
             if len(self.pending_question_segments) < MAX_QUESTION_SEGMENTS:
                 self.pending_question_segments.append(normalized)
         else:
@@ -447,7 +466,7 @@ class SessionManager:
             {
                 "type": "transcript",
                 "text": normalized,
-                "is_question": has_question_signal,
+                "is_question": has_question_signal or has_prompt_signal,
             }
         )
 
@@ -475,8 +494,12 @@ class SessionManager:
         for seg in segments:
             self._recent_context.append(seg)
 
-        # Skip LLM call entirely if no question keywords are present.
-        if not self._looks_like_question(question):
+        # Skip LLM call entirely for generic chatter, but allow imperative
+        # interview prompts such as "Please share..." to be classified.
+        if not (
+            self._looks_like_question(question)
+            or self._looks_like_interview_prompt(question)
+        ):
             print(f"[wingman] No question signal, skipping classifier: {question!r:.120}")
             self._go_listening()
             return
@@ -489,16 +512,28 @@ class SessionManager:
         print(f"[wingman] Classifying: {question!r:.200}")
         threading.Thread(
             target=self._classify_and_enqueue,
-            args=(question,),
+            args=(question, self.runtime_id, self.stop_event, self.llm),
             daemon=True,
         ).start()
 
-    def _classify_and_enqueue(self, question: str):
+    def _classify_and_enqueue(
+        self,
+        question: str,
+        runtime_id: int,
+        stop_event: threading.Event,
+        llm: LLMClient | None,
+    ):
+        if stop_event.is_set() or self.runtime_id != runtime_id:
+            return
+
         try:
-            is_question = self.llm.is_question(question) if self.llm else False
+            is_question = llm.is_question(question) if llm else False
         except Exception as error:
             print(f"[wingman] Classifier failed, assuming yes: {error}")
             is_question = True
+
+        if stop_event.is_set() or self.runtime_id != runtime_id:
+            return
 
         if not is_question:
             print(f"[wingman] LLM says NOT a question: {question!r:.120}")
@@ -567,10 +602,11 @@ class SessionManager:
                 }
             )
 
-        fan({"type": "done"})
-        self._broadcast_transcript({"type": "status", "status": "listening"})
-        self.status = "listening"
-        self._last_enqueued_question = ""
+        if self.runtime_id == runtime_id:
+            fan({"type": "done"})
+            self._broadcast_transcript({"type": "status", "status": "listening"})
+            self.status = "listening"
+            self._last_enqueued_question = ""
 
     # ------------------------------------------------------------------
     # Broadcast helpers
@@ -582,13 +618,22 @@ class SessionManager:
     def _broadcast_answer(self, payload: dict):
         self._broadcast(self.answer_subscribers, payload)
 
-    @staticmethod
-    def _broadcast(subscribers: Iterable[queue.Queue], payload: dict):
-        for subscriber in list(subscribers):
+    def _broadcast(self, subscribers: Iterable[queue.Queue], payload: dict):
+        with self.subscriber_lock:
+            subscriber_snapshot = list(subscribers)
+
+        for subscriber in subscriber_snapshot:
             try:
                 subscriber.put_nowait(payload)
             except queue.Full:
-                continue
+                try:
+                    subscriber.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    subscriber.put_nowait(payload)
+                except queue.Full:
+                    continue
 
     # ------------------------------------------------------------------
     # Heuristics
@@ -600,6 +645,11 @@ class SessionManager:
             return True
         lowered = f" {text.lower()} "
         return any(kw in lowered for kw in QUESTION_KEYWORDS)
+
+    @staticmethod
+    def _looks_like_interview_prompt(text: str) -> bool:
+        lowered = text.lower().strip()
+        return any(lowered.startswith(lead) for lead in PROMPT_LEAD_INS)
 
     @staticmethod
     def _looks_like_candidate_answer(text: str) -> bool:

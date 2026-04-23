@@ -2,11 +2,13 @@ import {
   app,
   globalShortcut,
   ipcMain,
+  type IpcMainInvokeEvent,
   shell,
 } from 'electron';
 import 'dotenv/config';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   PythonServerManager,
   type PythonServerExitInfo,
@@ -41,6 +43,9 @@ const userDataPath = app.getPath('userData');
 const historyPath = path.join(userDataPath, 'history');
 const logPath = path.join(userDataPath, 'wingman.log');
 const preloadPath = path.join(__dirname, '../preload/preload.js');
+const rendererIndexUrl = pathToFileURL(
+  path.join(__dirname, '../renderer/index.html'),
+).toString();
 const secureStore = new SecureStore(userDataPath);
 const windowManager = new WindowManager(preloadPath);
 let serverStartPromise: Promise<void> | null = null;
@@ -49,6 +54,7 @@ let serverRestartTimeout: NodeJS.Timeout | null = null;
 let appState: AppState = {
   serverReady: false,
   serverPort: null,
+  serverToken: null,
   sessionStatus: 'booting',
   overlayVisible: true,
   overlayMinimized: false,
@@ -72,6 +78,80 @@ function formatError(error: unknown) {
   }
 
   return String(error);
+}
+
+function normalizeExternalUrl(rawUrl: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('Invalid external URL.');
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Only http and https URLs can be opened externally.');
+  }
+
+  return parsed.toString();
+}
+
+function isTrustedRendererUrl(rawUrl: string) {
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+
+  try {
+    const parsed = new URL(rawUrl);
+
+    if (devServerUrl) {
+      return parsed.origin === new URL(devServerUrl).origin;
+    }
+
+    return rawUrl.startsWith(rendererIndexUrl);
+  } catch {
+    return false;
+  }
+}
+
+function assertTrustedSender(event: IpcMainInvokeEvent) {
+  const senderUrl = event.senderFrame?.url;
+  if (!senderUrl || !isTrustedRendererUrl(senderUrl)) {
+    throw new Error('Rejected IPC call from an untrusted renderer.');
+  }
+}
+
+function requireFiniteNumber(value: unknown, label: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${label} must be a finite number.`);
+  }
+  return value;
+}
+
+function normalizeSettingsUpdates(
+  updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>,
+) {
+  const normalized: Partial<Omit<PublicSettings, 'apiKeyStored'>> = {};
+  if (updates.language !== undefined) {
+    normalized.language = String(updates.language).trim() || 'en';
+  }
+  if (updates.model !== undefined) {
+    normalized.model = String(updates.model).trim() || 'llama-3.3-70b-versatile';
+  }
+  if (updates.overlayPreset !== undefined) {
+    const preset = updates.overlayPreset as OverlayPreset;
+    if (!['bottom-right', 'bottom-left', 'top-right', 'top-left'].includes(preset)) {
+      throw new Error('Invalid overlay preset.');
+    }
+    normalized.overlayPreset = preset;
+  }
+  if (updates.overlayOpacity !== undefined) {
+    normalized.overlayOpacity = Math.max(
+      0.25,
+      Math.min(requireFiniteNumber(updates.overlayOpacity, 'overlayOpacity'), 1),
+    );
+  }
+  if (updates.historyEnabled !== undefined) {
+    normalized.historyEnabled = Boolean(updates.historyEnabled);
+  }
+  return normalized;
 }
 
 async function logAppError(scope: string, error: unknown) {
@@ -113,6 +193,7 @@ async function ensureServerReady(nextStatus: AppState['sessionStatus']) {
     updateState({
       serverReady: true,
       serverPort: health.port,
+      serverToken: pythonServer.getAuthToken(),
       sessionStatus: nextStatus,
       currentSessionId: nextStatus === 'idle' ? null : appState.currentSessionId,
       health,
@@ -133,6 +214,7 @@ function scheduleServerRestart(message: string) {
   updateState({
     serverReady: false,
     serverPort: null,
+    serverToken: null,
     sessionStatus: 'error',
     currentSessionId: null,
     health: null,
@@ -288,30 +370,44 @@ async function stopSession() {
 }
 
 function installIpcHandlers() {
-  ipcMain.handle('app:get-state', async () => appState);
-  ipcMain.handle('app:get-settings', async () => secureStore.getSettings());
+  ipcMain.handle('app:get-state', async (event) => {
+    assertTrustedSender(event);
+    return appState;
+  });
+  ipcMain.handle('app:get-settings', async (event) => {
+    assertTrustedSender(event);
+    return secureStore.getSettings();
+  });
   ipcMain.handle(
     'app:save-settings',
-    async (_, updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>) => {
-      const nextSettings = await secureStore.updateSettings(updates);
-      if (updates.overlayPreset !== undefined) {
+    async (
+      event,
+      updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>,
+    ) => {
+      assertTrustedSender(event);
+      const normalizedUpdates = normalizeSettingsUpdates(updates);
+      const nextSettings = await secureStore.updateSettings(normalizedUpdates);
+      if (normalizedUpdates.overlayPreset !== undefined) {
         windowManager.positionOverlay(nextSettings.overlayPreset as OverlayPreset);
       }
-      if (updates.overlayOpacity !== undefined) {
+      if (normalizedUpdates.overlayOpacity !== undefined) {
         windowManager.setOverlayOpacity(nextSettings.overlayOpacity);
       }
       return nextSettings;
     },
   );
-  ipcMain.handle('app:save-api-key', async (_, apiKey: string) => {
+  ipcMain.handle('app:save-api-key', async (event, apiKey: string) => {
+    assertTrustedSender(event);
     await secureStore.saveApiKey(apiKey);
     return { ok: true };
   });
-  ipcMain.handle('app:clear-api-key', async () => {
+  ipcMain.handle('app:clear-api-key', async (event) => {
+    assertTrustedSender(event);
     await secureStore.clearApiKey();
     return { ok: true };
   });
-  ipcMain.handle('session:start', async (_, config: StartSessionRequest) => {
+  ipcMain.handle('session:start', async (event, config: StartSessionRequest) => {
+    assertTrustedSender(event);
     updateState({ sessionStatus: 'starting', error: null });
     try {
       const response = await startSession(config);
@@ -324,45 +420,62 @@ function installIpcHandlers() {
       throw error;
     }
   });
-  ipcMain.handle('session:stop', async () => stopSession());
-  ipcMain.handle('overlay:toggle', async () => {
+  ipcMain.handle('session:stop', async (event) => {
+    assertTrustedSender(event);
+    return stopSession();
+  });
+  ipcMain.handle('overlay:toggle', async (event) => {
+    assertTrustedSender(event);
     windowManager.toggleOverlayVisibility();
     updateState({});
     return appState;
   });
-  ipcMain.handle('overlay:minimize', async () => {
+  ipcMain.handle('overlay:minimize', async (event) => {
+    assertTrustedSender(event);
     windowManager.toggleOverlayMinimize();
     updateState({});
     return appState;
   });
-  ipcMain.handle('overlay:move', async (_, bounds: { x: number; y: number }) => {
-    windowManager.moveOverlay(bounds.x, bounds.y);
+  ipcMain.handle('overlay:move', async (event, bounds: { x: number; y: number }) => {
+    assertTrustedSender(event);
+    windowManager.moveOverlay(
+      Math.round(requireFiniteNumber(bounds?.x, 'x')),
+      Math.round(requireFiniteNumber(bounds?.y, 'y')),
+    );
     updateState({});
     return appState;
   });
   ipcMain.handle(
     'overlay:resize',
-    async (_, size: { width: number; height: number }) => {
-      windowManager.resizeOverlay(size.width, size.height);
+    async (event, size: { width: number; height: number }) => {
+      assertTrustedSender(event);
+      windowManager.resizeOverlay(
+        Math.round(requireFiniteNumber(size?.width, 'width')),
+        Math.round(requireFiniteNumber(size?.height, 'height')),
+      );
       updateState({});
       return appState;
     },
   );
-  ipcMain.handle('overlay:set-opacity', async (_, opacity: number) => {
-    windowManager.setOverlayOpacity(opacity);
+  ipcMain.handle('overlay:set-opacity', async (event, opacity: number) => {
+    assertTrustedSender(event);
+    windowManager.setOverlayOpacity(requireFiniteNumber(opacity, 'opacity'));
     updateState({});
     return appState;
   });
-  ipcMain.handle('overlay:release-focus', async () => {
+  ipcMain.handle('overlay:release-focus', async (event) => {
+    assertTrustedSender(event);
     windowManager.releaseOverlayFocus();
     return { ok: true };
   });
-  ipcMain.handle('history:open-folder', async () => {
+  ipcMain.handle('history:open-folder', async (event) => {
+    assertTrustedSender(event);
     await shell.openPath(historyPath);
     return { path: historyPath };
   });
-  ipcMain.handle('app:open-external', async (_, url: string) => {
-    await shell.openExternal(url);
+  ipcMain.handle('app:open-external', async (event, url: string) => {
+    assertTrustedSender(event);
+    await shell.openExternal(normalizeExternalUrl(url));
     return { ok: true };
   });
 }

@@ -23,6 +23,7 @@ const defaultSettings: PublicSettings = {
 const defaultAppState: AppState = {
   serverReady: false,
   serverPort: null,
+  serverToken: null,
   sessionStatus: 'booting',
   overlayVisible: true,
   overlayMinimized: false,
@@ -106,6 +107,7 @@ export function useSession() {
 
   useEffect(() => {
     if (!appState.serverPort) {
+      setHistoryLoading(false);
       return;
     }
 
@@ -114,7 +116,10 @@ export function useSession() {
     async function refreshHistory() {
       setHistoryLoading(true);
       try {
-        const response = await loadHistory(appState.serverPort as number);
+        const response = await loadHistory(
+          appState.serverPort as number,
+          appState.serverToken,
+        );
         if (isActive) {
           setHistory(response.sessions);
         }
@@ -138,7 +143,7 @@ export function useSession() {
     return () => {
       isActive = false;
     };
-  }, [appState.serverPort, appState.currentSessionId]);
+  }, [appState.serverPort, appState.serverToken, appState.currentSessionId]);
 
   const serverBaseUrl = useMemo(
     () => getServerBaseUrl(appState.serverPort),
@@ -195,10 +200,7 @@ export function useSession() {
   async function clearApiKey() {
     try {
       await window.wingman.clearApiKey();
-      setSettings((current) => ({
-        ...current,
-        apiKeyStored: false,
-      }));
+      setSettings(await window.wingman.getSettings());
     } catch (error) {
       setActionError(
         error instanceof Error ? error.message : 'Failed to clear API key.',
@@ -271,7 +273,11 @@ export function useSession() {
     setResumeUploading(true);
     setActionError(null);
     try {
-      const response = await uploadResume(appState.serverPort, file);
+      const response = await uploadResume(
+        appState.serverPort,
+        appState.serverToken,
+        file,
+      );
       setDraft((current) => ({
         ...current,
         resumeText: response.resume_text,

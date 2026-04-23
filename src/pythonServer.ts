@@ -3,6 +3,7 @@ import {
   type ChildProcessWithoutNullStreams,
   spawn,
 } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -36,6 +37,8 @@ export class PythonServerManager {
 
   private port: number | null = null;
 
+  private readonly authToken = randomBytes(32).toString('hex');
+
   private isExpectedShutdown = false;
 
   private lastPortProbeAt = 0;
@@ -56,12 +59,15 @@ export class PythonServerManager {
         ...process.env,
         PYTHONUNBUFFERED: '1',
         WINGMAN_HISTORY_DIR: historyDir,
+        WINGMAN_SERVER_TOKEN: this.authToken,
       },
       stdio: 'pipe',
+      windowsHide: true,
     });
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
+    let spawnError: Error | null = null;
 
     this.child.stdout.on('data', (chunk: Buffer) => {
       stdoutBuffer += chunk.toString();
@@ -84,6 +90,11 @@ export class PythonServerManager {
       }
     });
 
+    this.child.once('error', (error) => {
+      spawnError = error;
+      stderrBuffer += `${error.message}\n`;
+    });
+
     this.child.on('exit', (code) => {
       const expected = this.isExpectedShutdown;
       if (code !== 0 && code !== null) {
@@ -97,6 +108,16 @@ export class PythonServerManager {
 
     const startedAt = Date.now();
     while (!this.port) {
+      if (spawnError) {
+        throw new Error(`Failed to start Python server: ${spawnError.message}`);
+      }
+
+      if (this.child?.exitCode !== null && this.child?.exitCode !== undefined) {
+        throw new Error(
+          `Python server exited before reporting a port. ${stderrBuffer}`.trim(),
+        );
+      }
+
       if (this.isPackaged && this.child?.pid) {
         const discoveredPort = await this.discoverPortFromProcess();
         if (discoveredPort) {
@@ -124,7 +145,9 @@ export class PythonServerManager {
       throw new Error('Python server is not running.');
     }
 
-    const response = await fetch(`http://127.0.0.1:${this.port}/health`);
+    const response = await fetch(`http://127.0.0.1:${this.port}/health`, {
+      headers: this.authHeaders(),
+    });
     if (!response.ok) {
       throw new Error(`Health check failed with status ${response.status}.`);
     }
@@ -133,6 +156,10 @@ export class PythonServerManager {
 
   getPort() {
     return this.port;
+  }
+
+  getAuthToken() {
+    return this.authToken;
   }
 
   isRunning() {
@@ -254,7 +281,13 @@ export class PythonServerManager {
       throw new Error('Python server is not available.');
     }
 
-    const response = await fetch(`http://127.0.0.1:${this.port}${route}`, init);
+    const response = await fetch(`http://127.0.0.1:${this.port}${route}`, {
+      ...init,
+      headers: {
+        ...this.authHeaders(),
+        ...(init?.headers ?? {}),
+      },
+    });
     if (!response.ok) {
       const details = await response.text();
       throw new Error(details || `Request failed with status ${response.status}.`);
@@ -273,7 +306,7 @@ export class PythonServerManager {
       try {
         await fetch(`http://127.0.0.1:${this.port}/session/stop`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
           body: '{}',
         });
       } catch {
@@ -283,7 +316,7 @@ export class PythonServerManager {
       try {
         await fetch(`http://127.0.0.1:${this.port}/shutdown`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
           body: '{}',
         });
       } catch {
@@ -300,5 +333,11 @@ export class PythonServerManager {
         child.kill();
       }
     }
+  }
+
+  private authHeaders() {
+    return {
+      'X-Wingman-Token': this.authToken,
+    };
   }
 }

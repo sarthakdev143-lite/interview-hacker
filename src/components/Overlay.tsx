@@ -25,6 +25,12 @@ type ResizeDirection =
 
 const MIN_WIDTH = 360;
 const MIN_HEIGHT = 360;
+const MAX_WIDTH = 1100;
+const MAX_HEIGHT = 1200;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(value, max));
+}
 
 export function Overlay({
   appState,
@@ -117,17 +123,17 @@ export function Overlay({
       let nextY = startY;
 
       if (direction.includes('right')) {
-        nextWidth = Math.max(MIN_WIDTH, startWidth + deltaX);
+        nextWidth = clamp(startWidth + deltaX, MIN_WIDTH, MAX_WIDTH);
       }
       if (direction.includes('left')) {
-        nextWidth = Math.max(MIN_WIDTH, startWidth - deltaX);
+        nextWidth = clamp(startWidth - deltaX, MIN_WIDTH, MAX_WIDTH);
         nextX = startX + (startWidth - nextWidth);
       }
       if (direction.includes('bottom')) {
-        nextHeight = Math.max(MIN_HEIGHT, startHeight + deltaY);
+        nextHeight = clamp(startHeight + deltaY, MIN_HEIGHT, MAX_HEIGHT);
       }
       if (direction.includes('top')) {
-        nextHeight = Math.max(MIN_HEIGHT, startHeight - deltaY);
+        nextHeight = clamp(startHeight - deltaY, MIN_HEIGHT, MAX_HEIGHT);
         nextY = startY + (startHeight - nextHeight);
       }
 
@@ -260,6 +266,12 @@ export function Overlay({
                 className="no-drag flex-1 rounded-[1rem] border border-white/10 bg-slate-950/75 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-cyan-300/45"
                 onChange={(event) => setManualPrompt(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    inputRef.current?.blur();
+                    void window.wingman.releaseOverlayFocus();
+                    return;
+                  }
                   if (event.key === 'Enter') {
                     event.preventDefault();
                     void handleSubmit();

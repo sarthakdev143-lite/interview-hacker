@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import os
 import sys
 import threading
@@ -15,9 +16,14 @@ from resume_parser import extract_text_from_pdf
 from session_manager import SessionManager
 
 app = Flask(__name__)
-CORS(app)
+CORS(
+    app,
+    allow_headers=["Content-Type", "X-Wingman-Token"],
+    origins=["file://", "null", "http://127.0.0.1:*", "http://localhost:*"],
+)
 
 history_dir = os.environ.get("WINGMAN_HISTORY_DIR", os.path.join(os.getcwd(), "history"))
+server_token = os.environ.get("WINGMAN_SERVER_TOKEN", "")
 sessions = SessionManager(history_dir)
 server_holder: dict[str, object] = {"server": None, "port": 0}
 
@@ -32,6 +38,18 @@ def stream_events(events: Generator[dict, None, None]):
             yield ": ping\n\n"
             continue
         yield sse_format(event)
+
+
+@app.before_request
+def require_server_token():
+    if request.method == "OPTIONS" or not server_token:
+        return None
+
+    supplied_token = request.headers.get("X-Wingman-Token") or request.args.get("token")
+    if not supplied_token or not hmac.compare_digest(supplied_token, server_token):
+        return jsonify({"error": "Forbidden"}), 403
+
+    return None
 
 
 @app.post("/session/start")

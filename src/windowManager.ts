@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { AppState, OverlayPreset } from './types/contracts';
 
 export class WindowManager {
@@ -11,6 +12,30 @@ export class WindowManager {
 
   private get rendererPath() {
     return path.join(__dirname, '../renderer/index.html');
+  }
+
+  private isAppUrl(rawUrl: string) {
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    try {
+      const parsed = new URL(rawUrl);
+
+      if (devServerUrl) {
+        return parsed.origin === new URL(devServerUrl).origin;
+      }
+
+      return rawUrl.startsWith(pathToFileURL(this.rendererPath).toString());
+    } catch {
+      return false;
+    }
+  }
+
+  private hardenWindow(window: BrowserWindow) {
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('will-navigate', (event, url) => {
+      if (!this.isAppUrl(url)) {
+        event.preventDefault();
+      }
+    });
   }
 
   private async loadRoute(window: BrowserWindow, route: string) {
@@ -40,6 +65,8 @@ export class WindowManager {
       backgroundColor: '#07111f',
       show: false,
       webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
         preload: this.preloadPath,
       },
     });
@@ -58,10 +85,15 @@ export class WindowManager {
       hasShadow: true,
       backgroundColor: '#00000000',
       webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
         preload: this.preloadPath,
         backgroundThrottling: false,
       },
     });
+
+    this.hardenWindow(this.dashboardWindow);
+    this.hardenWindow(this.overlayWindow);
 
     this.overlayWindow.setOpacity(this.normalizeOpacity(overlayOpacity));
     this.overlayWindow.setAlwaysOnTop(true, 'screen-saver');
@@ -76,6 +108,9 @@ export class WindowManager {
 
     this.dashboardWindow.on('closed', () => {
       this.dashboardWindow = null;
+      if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
+        this.overlayWindow.close();
+      }
     });
 
     this.overlayWindow.on('closed', () => {

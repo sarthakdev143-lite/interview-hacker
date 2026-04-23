@@ -187,7 +187,7 @@ export function SessionSetup({
           <div className="mt-5 grid gap-4 md:grid-cols-2">
             <label className="space-y-2">
               <span className="text-xs uppercase tracking-[0.24em] text-slate-500">
-                Language
+                Interview language
               </span>
               <select
                 className="w-full rounded-[1.2rem] border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-200 outline-none transition focus:border-cyan-300/45"
@@ -200,6 +200,10 @@ export function SessionSetup({
                   </option>
                 ))}
               </select>
+              <p className="text-sm text-slate-400">
+                Speech is transcribed in this language, and non-English audio is
+                translated to English internally before question detection.
+              </p>
             </label>
 
             <label className="space-y-2">

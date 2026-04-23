@@ -4,7 +4,6 @@ import queue
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 
@@ -27,6 +26,11 @@ class PromptDrivenLLM:
         return transcript.lower().startswith("please share")
 
 
+class NeverClassifierLLM:
+    def is_question(self, transcript: str) -> bool:
+        raise AssertionError("Classifier should not run for obvious interview questions")
+
+
 class ExplodingClassifierLLM:
     def is_question(self, transcript: str) -> bool:
         raise AssertionError("Classifier should not run for non-question chatter")
@@ -44,22 +48,20 @@ class BlockingAnswerLLM:
 
 
 class FakeTranscriber:
-    def __init__(self, flush_text: str):
-        self.flush_text = flush_text
-        self.buffered = False
+    def __init__(self, on_transcript):
+        self.on_transcript = on_transcript
+        self.started = False
+        self.stopped = False
         self.feed_chunks: list[bytes] = []
 
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
     def feed(self, audio_chunk: bytes):
-        self.buffered = True
         self.feed_chunks.append(audio_chunk)
-        return None
-
-    def flush(self):
-        self.buffered = False
-        return self.flush_text
-
-    def has_buffered_audio(self) -> bool:
-        return self.buffered
 
 
 class SessionManagerTests(unittest.TestCase):
@@ -94,23 +96,59 @@ class SessionManagerTests(unittest.TestCase):
         with self.assertRaises(StopIteration):
             next(stream)
 
-    def test_silence_flush_queues_detected_question(self):
+    def test_final_deepgram_transcript_queues_detected_question(self):
         self.manager.llm = FakeLLM()
-        self.manager.transcriber = FakeTranscriber("What is React")
+        self.manager.transcriber = FakeTranscriber(self.manager._on_deepgram_transcript)
 
-        loud_chunk = (np.ones(1024, dtype=np.int16) * 2000).tobytes()
-        self.manager._process_audio_chunk(loud_chunk)
-
-        self.manager.last_voice_activity_at = time.time() - 1.0
-        self.manager._flush_transcriber_if_ready()
+        self.manager._on_deepgram_transcript("What is React", is_final=True)
         self.manager._flush_pending_question_if_ready(force=True)
 
         question, local_queue = self.manager.answer_queue.get_nowait()
         self.assertEqual(question, "What is React")
         self.assertIsNone(local_queue)
 
+    def test_interim_deepgram_transcript_does_not_queue_question(self):
+        self.manager.llm = FakeLLM()
+        subscriber: queue.Queue = queue.Queue()
+        self.manager.transcript_subscribers.add(subscriber)
+
+        self.manager._on_deepgram_transcript("What is React", is_final=False)
+
+        payload = subscriber.get_nowait()
+        self.assertEqual(
+            payload,
+            {
+                "type": "transcript",
+                "text": "What is React",
+                "interim": True,
+                "is_question": False,
+            },
+        )
+        with self.assertRaises(queue.Empty):
+            self.manager.answer_queue.get_nowait()
+
     def test_long_utterance_without_keyword_still_gets_classified(self):
         self.manager.llm = PromptDrivenLLM()
+
+        self.manager._publish_transcript("Please share one production incident you solved")
+        self.manager._flush_pending_question_if_ready(force=True)
+
+        question, local_queue = self.manager.answer_queue.get_nowait()
+        self.assertEqual(question, "Please share one production incident you solved")
+        self.assertIsNone(local_queue)
+
+    def test_obvious_question_bypasses_classifier_round_trip(self):
+        self.manager.llm = NeverClassifierLLM()
+
+        self.manager._publish_transcript("How would you optimize this query")
+        self.manager._flush_pending_question_if_ready(force=True)
+
+        question, local_queue = self.manager.answer_queue.get_nowait()
+        self.assertEqual(question, "How would you optimize this query")
+        self.assertIsNone(local_queue)
+
+    def test_prompt_style_question_bypasses_classifier_round_trip(self):
+        self.manager.llm = NeverClassifierLLM()
 
         self.manager._publish_transcript("Please share one production incident you solved")
         self.manager._flush_pending_question_if_ready(force=True)
@@ -186,12 +224,11 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.exchanges, [])
 
     def test_quiet_speech_still_reaches_transcriber(self):
-        self.manager.transcriber = FakeTranscriber("")
+        self.manager.transcriber = FakeTranscriber(self.manager._on_deepgram_transcript)
 
         quiet_chunk = (np.ones(1024, dtype=np.int16) * 60).tobytes()
         self.manager._process_audio_chunk(quiet_chunk)
 
-        self.assertTrue(self.manager.speech_active)
         self.assertGreater(len(self.manager.transcriber.feed_chunks), 0)
 
 

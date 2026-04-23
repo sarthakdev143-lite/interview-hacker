@@ -58,6 +58,11 @@ def start_session():
     api_key = str(payload.get("api_key", "")).strip()
     if not api_key:
         return jsonify({"error": "api_key is required"}), 400
+    deepgram_api_key = str(
+        payload.get("deepgram_api_key") or os.environ.get("DEEPGRAM_API_KEY", "")
+    ).strip()
+    if not deepgram_api_key:
+        return jsonify({"error": "deepgram_api_key is required"}), 400
 
     result = sessions.start_session(
         resume_text=str(payload.get("resume_text", "")).strip(),
@@ -65,6 +70,7 @@ def start_session():
         language=str(payload.get("language", "en")).strip() or "en",
         model=str(payload.get("model", "llama-3.3-70b-versatile")).strip(),
         api_key=api_key,
+        deepgram_api_key=deepgram_api_key,
         history_enabled=bool(payload.get("history_enabled", False)),
     )
     return jsonify(result)

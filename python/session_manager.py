@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Generator, Iterable
 from uuid import uuid4
 
-import numpy as np
-
 from audio_capture import AudioCapture
 from llm import LLMClient
 from transcriber import Transcriber
@@ -64,9 +62,63 @@ PROMPT_LEAD_INS = (
     "share an",
 )
 
-# Phrases that strongly suggest the *candidate* is beginning their own answer.
-# When one of these appears while a question candidate is pending, we flush
-# the question immediately rather than waiting for the settle timer.
+DIRECT_QUESTION_PREFIXES = (
+    "how ",
+    "why ",
+    "what ",
+    "where ",
+    "when ",
+    "which ",
+    "who ",
+    "tell me",
+    "tell us",
+    "explain",
+    "describe",
+    "can you",
+    "could you",
+    "walk me through",
+    "walk us through",
+    "what's",
+    "what is",
+    "what are",
+    "have you",
+    "do you",
+    "did you",
+    "would you",
+    "will you",
+    "are you",
+    "were you",
+    "is there",
+    "is it",
+    "give me",
+    "talk about",
+    "thoughts on",
+    "opinion on",
+    "familiar with",
+    "experience with",
+    "know about",
+    "please share",
+    "please explain",
+    "please describe",
+    "please tell",
+    "please walk",
+    "share one",
+    "share a",
+    "share an",
+    "tell us about yourself",
+    "introduce yourself",
+    "walk us through your resume",
+    "compare ",
+    "difference between",
+    "what happens",
+    "how would you",
+    "how do you",
+    "how did you",
+    "let's say",
+    "suppose",
+    "imagine",
+)
+
 CANDIDATE_ANSWER_LEAD_INS = (
     "sure ",
     "of course",
@@ -91,35 +143,28 @@ CANDIDATE_ANSWER_LEAD_INS = (
     "certainly",
 )
 
-# Short segments that are conversational noise and should never trigger or
-# extend a question candidate.
-FILLER_PATTERNS = frozenset((
-    "thank you",
-    "thanks",
-    "you're welcome",
-    "ok",
-    "okay",
-    "alright",
-    "right",
-    "mm",
-    "hmm",
-    "uh",
-    "um",
-    "ah",
-))
+FILLER_PATTERNS = frozenset(
+    (
+        "thank you",
+        "thanks",
+        "you're welcome",
+        "ok",
+        "okay",
+        "alright",
+        "right",
+        "mm",
+        "hmm",
+        "uh",
+        "um",
+        "ah",
+    )
+)
 
 # ---------------------------------------------------------------------------
 # Timing constants
 # ---------------------------------------------------------------------------
 
-QUESTION_SETTLE_SECONDS = 1.5
-SILENCE_HANGOVER_SECONDS = 1.0
-
-PCM_BYTES_PER_SECOND = 16000 * 2
-PRE_ROLL_SECONDS = 0.6
-SPEECH_RMS_THRESHOLD = 28
-SPEECH_RMS_MULTIPLIER = 1.8
-NOISE_FLOOR_SMOOTHING = 0.08
+QUESTION_SETTLE_SECONDS = 0.45
 
 MAX_QUESTION_SEGMENTS = 20
 MIN_SEGMENT_CHARS = 6
@@ -154,19 +199,12 @@ class SessionManager:
         self.worker_thread: threading.Thread | None = None
         self.answer_worker_thread: threading.Thread | None = None
 
-        # Segments collected while a question keyword has been spotted.
         self.pending_question_segments: list[str] = []
-        # Segments collected after the question is flushed (candidate answering).
         self.pending_utterance_segments: list[str] = []
 
         self.last_transcript_at = 0.0
-        self.last_voice_activity_at = 0.0
         self._recent_context: deque[str] = deque(maxlen=CONTEXT_LOOKBACK_SEGMENTS)
 
-        self.speech_active = False
-        self.pre_roll_chunks: deque[bytes] = deque()
-        self.pre_roll_buffered_bytes = 0
-        self.noise_floor_rms = 0.0
         self.started_at: float | None = None
         self.exchanges: list[dict] = []
         self.history_enabled = False
@@ -184,6 +222,7 @@ class SessionManager:
         language: str,
         model: str,
         api_key: str,
+        deepgram_api_key: str,
         history_enabled: bool,
     ) -> dict:
         self.stop_session()
@@ -200,11 +239,14 @@ class SessionManager:
             self.status = "listening"
             self.history_enabled = history_enabled
             self.started_at = time.time()
-            self.transcriber = Transcriber(api_key=api_key, language=language)
+            self.transcriber = Transcriber(
+                api_key=deepgram_api_key,
+                on_transcript=self._on_deepgram_transcript,
+            )
             self.llm = LLMClient(api_key=api_key)
             self.capture = AudioCapture(self._enqueue_audio)
             try:
-                self.capture.start()
+                self.transcriber.start()
                 self.worker_thread = threading.Thread(
                     target=self._transcription_loop, daemon=True
                 )
@@ -213,9 +255,12 @@ class SessionManager:
                     target=self._answer_loop, daemon=True
                 )
                 self.answer_worker_thread.start()
+                self.capture.start()
             except Exception:
                 if self.capture is not None:
                     self.capture.stop()
+                if self.transcriber is not None:
+                    self.transcriber.stop()
                 self._reset_runtime()
                 raise
 
@@ -224,6 +269,7 @@ class SessionManager:
 
     def stop_session(self) -> dict:
         capture = self.capture
+        transcriber = self.transcriber
         worker = self.worker_thread
         answer_worker = self.answer_worker_thread
         history_enabled = self.history_enabled
@@ -234,6 +280,8 @@ class SessionManager:
 
         if capture is not None:
             capture.stop()
+        if transcriber is not None:
+            transcriber.stop()
         if worker is not None and worker.is_alive():
             worker.join(timeout=2.5)
         if answer_worker is not None and answer_worker.is_alive():
@@ -343,7 +391,6 @@ class SessionManager:
             try:
                 audio_chunk = self.audio_queue.get(timeout=0.25)
             except queue.Empty:
-                self._flush_transcriber_if_ready()
                 self._flush_pending_question_if_ready()
                 continue
 
@@ -352,10 +399,8 @@ class SessionManager:
             except Exception as error:
                 print(f"[wingman] Transcription error: {error}")
 
-            self._flush_transcriber_if_ready()
             self._flush_pending_question_if_ready()
 
-        self._flush_transcriber_if_ready(force=True)
         self._flush_pending_question_if_ready(force=True)
 
     def _answer_loop(self):
@@ -367,7 +412,6 @@ class SessionManager:
             except queue.Empty:
                 continue
 
-            # Capture runtime state at dequeue time.
             runtime_id = self.runtime_id
             stop_event = self.stop_event
             llm = self.llm
@@ -381,57 +425,34 @@ class SessionManager:
                 self.answer_queue.task_done()
 
     # ------------------------------------------------------------------
-    # Audio → transcript
+    # Audio to transcript
     # ------------------------------------------------------------------
 
     def _process_audio_chunk(self, audio_chunk: bytes):
         if not self.transcriber:
             return
+        self.transcriber.feed(audio_chunk)
 
-        if not self.speech_active:
-            self._buffer_pre_roll_chunk(audio_chunk)
-
-        rms = self._chunk_rms(audio_chunk)
-        chunk_has_speech = self._chunk_has_speech(rms)
-        if chunk_has_speech:
-            self.speech_active = True
-            self.last_voice_activity_at = time.time()
-            if self.pre_roll_chunks:
-                text = self._prime_transcriber_from_pre_roll()
-                if text:
-                    self._publish_transcript(text)
-                return
-
-        if not self.speech_active:
+    def _on_deepgram_transcript(self, text: str, is_final: bool):
+        normalized = " ".join(text.split()).strip()
+        if not normalized:
             return
 
-        text = self.transcriber.feed(audio_chunk)
-        if text:
-            self._publish_transcript(text)
-
-    def _flush_transcriber_if_ready(self, force: bool = False):
-        if (
-            not self.transcriber
-            or not self.speech_active
-            or not self.transcriber.has_buffered_audio()
-        ):
+        if is_final:
+            self._publish_transcript(normalized)
             return
 
-        if not force and (time.time() - self.last_voice_activity_at) < SILENCE_HANGOVER_SECONDS:
-            return
-
-        try:
-            tail = self.transcriber.flush()
-            if tail:
-                self._publish_transcript(tail)
-        except Exception as error:
-            print(f"[wingman] Final transcription flush failed: {error}")
-        finally:
-            self.speech_active = False
-            self._clear_pre_roll_buffer()
+        self._broadcast_transcript(
+            {
+                "type": "transcript",
+                "text": normalized,
+                "interim": True,
+                "is_question": False,
+            }
+        )
 
     # ------------------------------------------------------------------
-    # Transcript → question detection
+    # Transcript to question detection
     # ------------------------------------------------------------------
 
     def _publish_transcript(self, text: str):
@@ -439,7 +460,6 @@ class SessionManager:
         if not normalized or len(normalized) < MIN_SEGMENT_CHARS:
             return
 
-        # Pure filler words are useless for question detection.
         if self._is_filler(normalized):
             return
 
@@ -452,7 +472,6 @@ class SessionManager:
         has_answer_lead_in = self._looks_like_candidate_answer(normalized)
 
         if self.pending_question_segments and has_answer_lead_in:
-            # The candidate is starting to answer — flush the question now.
             print(f"[wingman] Answer lead-in, early flush: {normalized!r}")
             self._flush_pending_question_if_ready(force=True)
             self.pending_utterance_segments.append(normalized)
@@ -477,7 +496,6 @@ class SessionManager:
         if not force and (time.time() - self.last_transcript_at) < QUESTION_SETTLE_SECONDS:
             return
 
-        # Trim trailing filler from the candidate.
         segments = list(self.pending_question_segments)
         while segments and self._is_filler(segments[-1]):
             segments.pop()
@@ -494,8 +512,6 @@ class SessionManager:
         for seg in segments:
             self._recent_context.append(seg)
 
-        # Skip LLM call entirely for generic chatter, but allow imperative
-        # interview prompts such as "Please share..." to be classified.
         if not (
             self._looks_like_question(question)
             or self._looks_like_interview_prompt(question)
@@ -505,8 +521,13 @@ class SessionManager:
             return
 
         if question == self._last_enqueued_question:
-            print(f"[wingman] Duplicate question, skipping")
+            print("[wingman] Duplicate question, skipping")
             self._go_listening()
+            return
+
+        if self._looks_like_direct_question(segments, question):
+            print(f"[wingman] Direct question, enqueueing: {question!r:.200}")
+            self._enqueue_question(question)
             return
 
         print(f"[wingman] Classifying: {question!r:.200}")
@@ -541,6 +562,9 @@ class SessionManager:
             return
 
         print(f"[wingman] QUESTION CONFIRMED: {question!r:.200}")
+        self._enqueue_question(question)
+
+    def _enqueue_question(self, question: str):
         self._recent_context.clear()
         self.pending_utterance_segments = []
         self._last_enqueued_question = question
@@ -652,6 +676,18 @@ class SessionManager:
         return any(lowered.startswith(lead) for lead in PROMPT_LEAD_INS)
 
     @staticmethod
+    def _looks_like_direct_question(segments: list[str], text: str) -> bool:
+        if text.strip().endswith("?"):
+            return True
+
+        candidates = [text, *segments]
+        return any(
+            candidate.lower().strip().startswith(prefix)
+            for candidate in candidates
+            for prefix in DIRECT_QUESTION_PREFIXES
+        )
+
+    @staticmethod
     def _looks_like_candidate_answer(text: str) -> bool:
         lowered = text.lower().strip()
         return any(lowered.startswith(lead.strip()) for lead in CANDIDATE_ANSWER_LEAD_INS)
@@ -660,53 +696,6 @@ class SessionManager:
     def _is_filler(text: str) -> bool:
         lowered = text.lower().strip().rstrip(".,!?")
         return lowered in FILLER_PATTERNS
-
-    # ------------------------------------------------------------------
-    # Audio helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _chunk_rms(audio_chunk: bytes) -> float:
-        samples = np.frombuffer(audio_chunk, dtype=np.int16)
-        if samples.size == 0:
-            return 0.0
-        return float(np.sqrt(np.mean(np.square(samples.astype(np.float32)))))
-
-    def _chunk_has_speech(self, rms: float) -> bool:
-        threshold = max(SPEECH_RMS_THRESHOLD, self.noise_floor_rms * SPEECH_RMS_MULTIPLIER)
-        has_speech = rms >= threshold
-        if not self.speech_active and not has_speech:
-            if self.noise_floor_rms <= 0:
-                self.noise_floor_rms = rms
-            else:
-                self.noise_floor_rms = (
-                    self.noise_floor_rms * (1 - NOISE_FLOOR_SMOOTHING)
-                    + rms * NOISE_FLOOR_SMOOTHING
-                )
-        return has_speech
-
-    def _buffer_pre_roll_chunk(self, audio_chunk: bytes):
-        self.pre_roll_chunks.append(audio_chunk)
-        self.pre_roll_buffered_bytes += len(audio_chunk)
-        max_bytes = int(PRE_ROLL_SECONDS * PCM_BYTES_PER_SECOND)
-        while self.pre_roll_buffered_bytes > max_bytes and self.pre_roll_chunks:
-            removed = self.pre_roll_chunks.popleft()
-            self.pre_roll_buffered_bytes -= len(removed)
-
-    def _prime_transcriber_from_pre_roll(self) -> str | None:
-        if not self.transcriber:
-            return None
-        texts: list[str] = []
-        for chunk in self.pre_roll_chunks:
-            text = self.transcriber.feed(chunk)
-            if text:
-                texts.append(text)
-        self._clear_pre_roll_buffer()
-        return " ".join(texts).strip() or None
-
-    def _clear_pre_roll_buffer(self):
-        self.pre_roll_chunks.clear()
-        self.pre_roll_buffered_bytes = 0
 
     # ------------------------------------------------------------------
     # History

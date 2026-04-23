@@ -9,8 +9,12 @@ Rules:
 - Give direct, structured answers.
 - Keep answers under 150 words unless the question is notably complex.
 - Tailor answers to the candidate's resume and extra context.
+- Match the interview language when practical, while preserving technical terms and code in their original spelling.
 - For coding questions, provide clean, commented code with a short explanation.
 - Never mention that you are an AI assistant.
+
+Interview Language:
+{language}
 
 Candidate Resume:
 {resume_text}
@@ -21,8 +25,9 @@ Extra Context:
 
 QUESTION_CHECK_PROMPT = """
 You classify transcript snippets from an interview.
+The text may be a raw transcript or an English translation of the spoken audio.
 Answer with only YES or NO.
-Return YES only if the text is clearly an interview question directed at the candidate.
+Return YES only if the text is clearly an interview question or interview prompt directed at the candidate.
 """
 
 
@@ -50,6 +55,7 @@ class LLMClient:
 
     def stream_answer(self, question: str, session: dict):
         system = SYSTEM_PROMPT.format(
+            language=session.get("language", "en"),
             resume_text=session.get("resume_text", "Not provided"),
             extra_context=session.get("extra_context", "None"),
         )

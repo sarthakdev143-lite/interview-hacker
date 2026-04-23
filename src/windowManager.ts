@@ -36,6 +36,24 @@ export class WindowManager {
         event.preventDefault();
       }
     });
+    this.applyCaptureProtection(window);
+    window.on('show', () => {
+      this.applyCaptureProtection(window);
+    });
+    window.on('restore', () => {
+      this.applyCaptureProtection(window);
+    });
+    window.webContents.on('did-finish-load', () => {
+      this.applyCaptureProtection(window);
+    });
+  }
+
+  private applyCaptureProtection(window: BrowserWindow) {
+    if (window.isDestroyed()) {
+      return;
+    }
+
+    window.setContentProtection(true);
   }
 
   private async loadRoute(window: BrowserWindow, route: string) {
@@ -96,8 +114,8 @@ export class WindowManager {
     this.hardenWindow(this.overlayWindow);
 
     this.overlayWindow.setOpacity(this.normalizeOpacity(overlayOpacity));
-    this.overlayWindow.setAlwaysOnTop(true, 'screen-saver');
-    this.overlayWindow.setContentProtection(true);
+    this.overlayWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+    this.applyCaptureProtection(this.overlayWindow);
     if (process.platform !== 'win32') {
       this.overlayWindow.setVisibleOnAllWorkspaces(true, {
         visibleOnFullScreen: true,
@@ -133,7 +151,9 @@ export class WindowManager {
     await Promise.all([dashboardReadyToShow, overlayReadyToShow]);
 
     this.dashboardWindow.show();
+    this.applyCaptureProtection(this.dashboardWindow);
     this.overlayWindow.showInactive();
+    this.applyCaptureProtection(this.overlayWindow);
   }
 
   positionOverlay(preset: OverlayPreset) {

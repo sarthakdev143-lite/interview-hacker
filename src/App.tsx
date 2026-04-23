@@ -195,6 +195,7 @@ function DashboardApp() {
                   canStart={session.canStart}
                   draft={session.draft}
                   onClearApiKey={session.clearApiKey}
+                  onClearDeepgramApiKey={session.clearDeepgramApiKey}
                   onDraftChange={(field, value) =>
                     session.setDraft((current) => ({
                       ...current,
@@ -202,11 +203,13 @@ function DashboardApp() {
                     }) as typeof session.draft)
                   }
                   onSaveApiKey={session.saveApiKey}
+                  onSaveDeepgramApiKey={session.saveDeepgramApiKey}
                   onSavePreferences={session.savePreferences}
                   onStart={session.startSession}
                   onStop={session.stopSession}
                   onUploadResume={session.handleResumeUpload}
                   resumeUploading={session.resumeUploading}
+                  savingDeepgramKey={session.savingDeepgramKey}
                   savingKey={session.savingKey}
                   sessionRunning={session.sessionRunning}
                   settings={session.settings}

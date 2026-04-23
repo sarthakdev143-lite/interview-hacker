@@ -9,6 +9,7 @@ import type {
 
 export interface SessionDraft extends StartSessionRequest {
   apiKeyInput: string;
+  deepgramApiKeyInput: string;
 }
 
 const defaultSettings: PublicSettings = {
@@ -18,6 +19,7 @@ const defaultSettings: PublicSettings = {
   overlayOpacity: 0.95,
   historyEnabled: false,
   apiKeyStored: false,
+  deepgramApiKeyStored: false,
 };
 
 const defaultAppState: AppState = {
@@ -40,6 +42,7 @@ export function useSession() {
   const [resumeUploading, setResumeUploading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState(false);
+  const [savingDeepgramKey, setSavingDeepgramKey] = useState(false);
   const [draft, setDraft] = useState<SessionDraft>({
     resumeText: '',
     extraContext: '',
@@ -49,6 +52,7 @@ export function useSession() {
     overlayOpacity: defaultSettings.overlayOpacity,
     historyEnabled: defaultSettings.historyEnabled,
     apiKeyInput: '',
+    deepgramApiKeyInput: '',
   });
 
   useEffect(() => {
@@ -152,7 +156,8 @@ export function useSession() {
 
   const canStart =
     Boolean(draft.resumeText.trim() || draft.extraContext.trim()) &&
-    Boolean(settings.apiKeyStored || draft.apiKeyInput.trim());
+    Boolean(settings.apiKeyStored || draft.apiKeyInput.trim()) &&
+    Boolean(settings.deepgramApiKeyStored || draft.deepgramApiKeyInput.trim());
 
   const sessionRunning =
     appState.sessionStatus !== 'idle' &&
@@ -208,6 +213,43 @@ export function useSession() {
     }
   }
 
+  async function saveDeepgramApiKey() {
+    if (!draft.deepgramApiKeyInput.trim()) {
+      return;
+    }
+
+    setSavingDeepgramKey(true);
+    setActionError(null);
+    try {
+      await window.wingman.saveDeepgramApiKey(draft.deepgramApiKeyInput.trim());
+      setSettings((current) => ({
+        ...current,
+        deepgramApiKeyStored: true,
+      }));
+      setDraft((current) => ({
+        ...current,
+        deepgramApiKeyInput: '',
+      }));
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Failed to save API key.',
+      );
+    } finally {
+      setSavingDeepgramKey(false);
+    }
+  }
+
+  async function clearDeepgramApiKey() {
+    try {
+      await window.wingman.clearDeepgramApiKey();
+      setSettings(await window.wingman.getSettings());
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Failed to clear API key.',
+      );
+    }
+  }
+
   async function startSession() {
     setActionError(null);
 
@@ -221,6 +263,7 @@ export function useSession() {
         overlayOpacity: draft.overlayOpacity,
         historyEnabled: draft.historyEnabled,
         apiKey: draft.apiKeyInput.trim() || undefined,
+        deepgramApiKey: draft.deepgramApiKeyInput.trim() || undefined,
       });
 
       setSettings((current) => ({
@@ -231,10 +274,13 @@ export function useSession() {
         overlayOpacity: draft.overlayOpacity,
         historyEnabled: draft.historyEnabled,
         apiKeyStored: current.apiKeyStored || Boolean(draft.apiKeyInput.trim()),
+        deepgramApiKeyStored:
+          current.deepgramApiKeyStored || Boolean(draft.deepgramApiKeyInput.trim()),
       }));
       setDraft((current) => ({
         ...current,
         apiKeyInput: '',
+        deepgramApiKeyInput: '',
       }));
       setAppState((current) => ({
         ...current,
@@ -319,12 +365,15 @@ export function useSession() {
     resumeUploading,
     actionError,
     savingKey,
+    savingDeepgramKey,
     canStart,
     sessionRunning,
     serverBaseUrl,
     savePreferences,
     saveApiKey,
     clearApiKey,
+    saveDeepgramApiKey,
+    clearDeepgramApiKey,
     startSession,
     stopSession,
     handleResumeUpload,

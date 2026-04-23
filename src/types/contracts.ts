@@ -26,6 +26,7 @@ export interface StartSessionRequest {
   overlayOpacity: number;
   historyEnabled: boolean;
   apiKey?: string;
+  deepgramApiKey?: string;
 }
 
 export interface PublicSettings {
@@ -35,6 +36,7 @@ export interface PublicSettings {
   overlayOpacity: number;
   historyEnabled: boolean;
   apiKeyStored: boolean;
+  deepgramApiKeyStored: boolean;
 }
 
 export interface HistoryExchange {
@@ -90,10 +92,12 @@ export interface WingmanApi {
   getAppState: () => Promise<AppState>;
   getSettings: () => Promise<PublicSettings>;
   saveSettings: (
-    settings: Partial<Omit<PublicSettings, 'apiKeyStored'>>,
+    settings: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>>,
   ) => Promise<PublicSettings>;
   saveApiKey: (apiKey: string) => Promise<{ ok: true }>;
   clearApiKey: () => Promise<{ ok: true }>;
+  saveDeepgramApiKey: (apiKey: string) => Promise<{ ok: true }>;
+  clearDeepgramApiKey: () => Promise<{ ok: true }>;
   startSession: (
     config: StartSessionRequest,
   ) => Promise<{ session_id: string; status: SessionStatus }>;

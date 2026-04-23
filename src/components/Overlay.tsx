@@ -74,33 +74,6 @@ export function Overlay({
     }
   }
 
-  function beginDrag(event: React.PointerEvent<HTMLDivElement>) {
-    if ((event.target as HTMLElement).closest('.no-drag')) {
-      return;
-    }
-
-    event.preventDefault();
-    const startPointerX = event.screenX;
-    const startPointerY = event.screenY;
-    const startWindowX = window.screenX;
-    const startWindowY = window.screenY;
-
-    const handleMove = (moveEvent: PointerEvent) => {
-      void window.wingman.moveOverlay({
-        x: Math.round(startWindowX + (moveEvent.screenX - startPointerX)),
-        y: Math.round(startWindowY + (moveEvent.screenY - startPointerY)),
-      });
-    };
-
-    const handleUp = () => {
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', handleUp);
-    };
-
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', handleUp, { once: true });
-  }
-
   function beginResize(direction: ResizeDirection, event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     event.stopPropagation();
@@ -191,7 +164,6 @@ export function Overlay({
 
         <header
           className="drag-region relative z-10 border-b border-white/10 px-4 py-4"
-          onPointerDown={beginDrag}
         >
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">

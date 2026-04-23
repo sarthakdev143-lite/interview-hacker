@@ -9,10 +9,13 @@ import type {
 const api: WingmanApi = {
   getAppState: () => ipcRenderer.invoke('app:get-state'),
   getSettings: () => ipcRenderer.invoke('app:get-settings'),
-  saveSettings: (settings: Partial<Omit<PublicSettings, 'apiKeyStored'>>) =>
+  saveSettings: (settings: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>>) =>
     ipcRenderer.invoke('app:save-settings', settings),
   saveApiKey: (apiKey: string) => ipcRenderer.invoke('app:save-api-key', apiKey),
   clearApiKey: () => ipcRenderer.invoke('app:clear-api-key'),
+  saveDeepgramApiKey: (apiKey: string) =>
+    ipcRenderer.invoke('app:save-deepgram-api-key', apiKey),
+  clearDeepgramApiKey: () => ipcRenderer.invoke('app:clear-deepgram-api-key'),
   startSession: (config: StartSessionRequest) =>
     ipcRenderer.invoke('session:start', config),
   stopSession: () => ipcRenderer.invoke('session:stop'),

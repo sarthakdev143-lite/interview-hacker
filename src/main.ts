@@ -126,9 +126,9 @@ function requireFiniteNumber(value: unknown, label: string) {
 }
 
 function normalizeSettingsUpdates(
-  updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>,
+  updates: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>>,
 ) {
-  const normalized: Partial<Omit<PublicSettings, 'apiKeyStored'>> = {};
+  const normalized: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>> = {};
   if (updates.language !== undefined) {
     normalized.language = String(updates.language).trim() || 'en';
   }
@@ -300,8 +300,19 @@ async function startSession(config: StartSessionRequest) {
     throw new Error('A Groq API key is required before starting a session.');
   }
 
+  const deepgramApiKey =
+    config.deepgramApiKey?.trim() ||
+    (await secureStore.getDeepgramApiKey()) ||
+    '';
+  if (!deepgramApiKey) {
+    throw new Error('A Deepgram API key is required before starting a session.');
+  }
+
   if (config.apiKey?.trim()) {
     await secureStore.saveApiKey(config.apiKey.trim());
+  }
+  if (config.deepgramApiKey?.trim()) {
+    await secureStore.saveDeepgramApiKey(config.deepgramApiKey.trim());
   }
 
   const response = await pythonServer.request<{
@@ -319,6 +330,7 @@ async function startSession(config: StartSessionRequest) {
       model: config.model,
       history_enabled: config.historyEnabled,
       api_key: apiKey,
+      deepgram_api_key: deepgramApiKey,
     }),
   });
 
@@ -382,7 +394,7 @@ function installIpcHandlers() {
     'app:save-settings',
     async (
       event,
-      updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>,
+      updates: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>>,
     ) => {
       assertTrustedSender(event);
       const normalizedUpdates = normalizeSettingsUpdates(updates);
@@ -404,6 +416,16 @@ function installIpcHandlers() {
   ipcMain.handle('app:clear-api-key', async (event) => {
     assertTrustedSender(event);
     await secureStore.clearApiKey();
+    return { ok: true };
+  });
+  ipcMain.handle('app:save-deepgram-api-key', async (event, apiKey: string) => {
+    assertTrustedSender(event);
+    await secureStore.saveDeepgramApiKey(apiKey);
+    return { ok: true };
+  });
+  ipcMain.handle('app:clear-deepgram-api-key', async (event) => {
+    assertTrustedSender(event);
+    await secureStore.clearDeepgramApiKey();
     return { ok: true };
   });
   ipcMain.handle('session:start', async (event, config: StartSessionRequest) => {

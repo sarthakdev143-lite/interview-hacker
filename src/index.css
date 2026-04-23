@@ -171,6 +171,7 @@ textarea {
 }
 
 .drag-region {
+  -webkit-app-region: drag;
   cursor: grab;
   user-select: none;
 }
@@ -184,8 +185,11 @@ textarea {
 }
 
 .overlay-resize-handle {
+  -webkit-app-region: no-drag;
   position: absolute;
   z-index: 20;
+  touch-action: none;
+  user-select: none;
 }
 
 .overlay-resize-handle:hover,

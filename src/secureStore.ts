@@ -5,6 +5,7 @@ import type { OverlayPreset, PublicSettings } from './types/contracts';
 
 interface PersistedStore {
   encryptedApiKey?: string;
+  encryptedDeepgramApiKey?: string;
   language?: string;
   model?: string;
   overlayPreset?: OverlayPreset;
@@ -12,7 +13,7 @@ interface PersistedStore {
   historyEnabled?: boolean;
 }
 
-const DEFAULT_SETTINGS: Omit<PublicSettings, 'apiKeyStored'> = {
+const DEFAULT_SETTINGS: Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'> = {
   language: 'en',
   model: 'llama-3.3-70b-versatile',
   overlayPreset: 'bottom-right',
@@ -50,11 +51,12 @@ export class SecureStore {
       overlayOpacity: store.overlayOpacity ?? DEFAULT_SETTINGS.overlayOpacity,
       historyEnabled: store.historyEnabled ?? DEFAULT_SETTINGS.historyEnabled,
       apiKeyStored: Boolean(store.encryptedApiKey || process.env.GROQ_API_KEY?.trim()),
+      deepgramApiKeyStored: Boolean(store.encryptedDeepgramApiKey),
     };
   }
 
   async updateSettings(
-    updates: Partial<Omit<PublicSettings, 'apiKeyStored'>>,
+    updates: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>>,
   ): Promise<PublicSettings> {
     const current = await this.readStore();
     const merged: PersistedStore = {
@@ -96,6 +98,40 @@ export class SecureStore {
 
     return safeStorage.decryptString(
       Buffer.from(current.encryptedApiKey, 'base64'),
+    );
+  }
+
+  async saveDeepgramApiKey(apiKey: string) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('OS encryption is unavailable on this device.');
+    }
+
+    const current = await this.readStore();
+    const encrypted = safeStorage.encryptString(apiKey).toString('base64');
+    await this.writeStore({
+      ...current,
+      encryptedDeepgramApiKey: encrypted,
+    });
+  }
+
+  async clearDeepgramApiKey() {
+    const current = await this.readStore();
+    delete current.encryptedDeepgramApiKey;
+    await this.writeStore(current);
+  }
+
+  async getDeepgramApiKey(): Promise<string | null> {
+    const current = await this.readStore();
+    if (!current.encryptedDeepgramApiKey) {
+      return null;
+    }
+
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('OS encryption is unavailable on this device.');
+    }
+
+    return safeStorage.decryptString(
+      Buffer.from(current.encryptedDeepgramApiKey, 'base64'),
     );
   }
 }

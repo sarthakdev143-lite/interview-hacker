@@ -6,7 +6,7 @@ const statusMeta: Record<
 > = {
   booting: { label: 'Booting backend', tone: 'bg-cyan-400', pulse: true, accent: 'text-cyan-200' },
   ready: { label: 'Ready to listen', tone: 'bg-cyan-400', pulse: false, accent: 'text-cyan-200' },
-  idle: { label: 'Listening', tone: 'bg-emerald-400', pulse: true, accent: 'text-emerald-200' },
+  idle: { label: 'Ready', tone: 'bg-cyan-400', pulse: false, accent: 'text-cyan-200' },
   starting: { label: 'Starting session', tone: 'bg-amber-400', pulse: true, accent: 'text-amber-200' },
   listening: { label: 'Listening', tone: 'bg-emerald-400', pulse: true, accent: 'text-emerald-200' },
   transcribing: { label: 'Transcribing', tone: 'bg-cyan-400', pulse: true, accent: 'text-cyan-200' },

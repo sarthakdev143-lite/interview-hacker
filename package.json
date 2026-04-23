@@ -1,7 +1,7 @@
 {
   "name": "wingman",
   "productName": "WingMan",
-  "version": "v0.0.1-alpha",
+  "version": "0.0.1-alpha",
   "description": "A real-time desktop interview assistant built with Electron, React, and Python.",
   "main": "dist/main/main.js",
   "private": true,

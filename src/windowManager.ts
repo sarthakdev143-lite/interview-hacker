@@ -95,7 +95,7 @@ export class WindowManager {
       show: false,
       transparent: true,
       frame: false,
-      resizable: true,
+      resizable: false,
       alwaysOnTop: true,
       skipTaskbar: true,
       focusable: false,

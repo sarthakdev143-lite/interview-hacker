@@ -39,6 +39,8 @@ interface SessionSetupProps {
   ) => void;
   onSaveApiKey: () => Promise<void>;
   onClearApiKey: () => Promise<void>;
+  onSaveDeepgramApiKey: () => Promise<void>;
+  onClearDeepgramApiKey: () => Promise<void>;
   onStart: () => Promise<void>;
   onStop: () => Promise<void>;
   onSavePreferences: () => Promise<void>;
@@ -47,6 +49,7 @@ interface SessionSetupProps {
   sessionRunning: boolean;
   resumeUploading: boolean;
   savingKey: boolean;
+  savingDeepgramKey: boolean;
   actionError: string | null;
   answer: string;
   transcriptLines: TranscriptLine[];
@@ -59,6 +62,8 @@ export function SessionSetup({
   onDraftChange,
   onSaveApiKey,
   onClearApiKey,
+  onSaveDeepgramApiKey,
+  onClearDeepgramApiKey,
   onStart,
   onStop,
   onSavePreferences,
@@ -67,6 +72,7 @@ export function SessionSetup({
   sessionRunning,
   resumeUploading,
   savingKey,
+  savingDeepgramKey,
   actionError,
   answer,
   transcriptLines,
@@ -320,6 +326,56 @@ export function SessionSetup({
               className="rounded-full border border-white/15 px-4 py-3 text-sm text-slate-200 transition hover:border-white/30 hover:bg-white/5"
               onClick={() => {
                 void onClearApiKey();
+              }}
+              type="button"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div className="panel-surface rounded-[1.9rem] p-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-100">Deepgram API key</h2>
+              <p className="mt-2 text-sm text-slate-400">
+                Powers real-time streaming transcription. Get a free key at
+                console.deepgram.com
+              </p>
+            </div>
+            <span className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-xs uppercase tracking-[0.24em] text-slate-400">
+              {settings.deepgramApiKeyStored ? 'Stored' : 'Missing'}
+            </span>
+          </div>
+
+          <div className="mt-5 flex flex-col gap-3 md:flex-row">
+            <input
+              className="flex-1 rounded-[1.2rem] border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-200 outline-none transition focus:border-cyan-300/45 focus:ring-2 focus:ring-cyan-300/15"
+              onChange={(event) =>
+                onDraftChange('deepgramApiKeyInput', event.target.value)
+              }
+              placeholder={
+                settings.deepgramApiKeyStored
+                  ? 'Replace the active API key'
+                  : 'Paste your DEEPGRAM_API_KEY'
+              }
+              type="password"
+              value={draft.deepgramApiKeyInput}
+            />
+            <button
+              className="rounded-full bg-slate-100 px-4 py-3 text-sm font-medium text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!draft.deepgramApiKeyInput.trim() || savingDeepgramKey}
+              onClick={() => {
+                void onSaveDeepgramApiKey();
+              }}
+              type="button"
+            >
+              {savingDeepgramKey ? 'Saving...' : 'Save key'}
+            </button>
+            <button
+              className="rounded-full border border-white/15 px-4 py-3 text-sm text-slate-200 transition hover:border-white/30 hover:bg-white/5"
+              onClick={() => {
+                void onClearDeepgramApiKey();
               }}
               type="button"
             >

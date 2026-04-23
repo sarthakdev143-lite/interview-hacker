@@ -51,6 +51,11 @@ const windowManager = new WindowManager(preloadPath);
 let serverStartPromise: Promise<void> | null = null;
 let serverRestartTimeout: NodeJS.Timeout | null = null;
 
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-features', 'WindowsGraphicsCapture');
+  app.commandLine.appendSwitch('enable-features', 'DirectCompositionVideoOverlays');
+}
+
 let appState: AppState = {
   serverReady: false,
   serverPort: null,

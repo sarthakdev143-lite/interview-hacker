@@ -52,6 +52,13 @@ export function StatusBar({ status, health, compact = false }: StatusBarProps) {
           </span>
         )}
       </div>
+      {health?.capture_warning && (
+        <p className="mt-2 rounded-[1rem] border border-amber-400/20 bg-amber-400/8 px-3 py-2 text-xs leading-5 text-amber-200/80">
+          Windows 10 detected. Chrome and Edge use a capture API that bypasses
+          screen protection. Use Brave or Firefox for your video call to keep the
+          overlay hidden from screen share.
+        </p>
+      )}
     </div>
   );
 }

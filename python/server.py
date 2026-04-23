@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hmac
 import os
+import platform as _platform
 import sys
 import threading
 from typing import Generator
@@ -154,6 +155,8 @@ def health():
             "status": "ok",
             "port": server_holder["port"],
             "platform": sys.platform,
+            "capture_warning": sys.platform == "win32"
+            and _platform.version() < "10.0.22621",
             "audio": {
                 "ready": audio_probe.ready,
                 "message": audio_probe.message,

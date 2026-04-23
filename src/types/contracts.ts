@@ -56,6 +56,7 @@ export interface HealthPayload {
   status: 'ok';
   port: number;
   platform: string;
+  capture_warning: boolean;
   audio: {
     ready: boolean;
     message: string;

@@ -48,12 +48,68 @@ export class WindowManager {
     });
   }
 
-  private applyCaptureProtection(window: BrowserWindow) {
+  private applyCaptureProtection(window: BrowserWindow): void {
     if (window.isDestroyed()) {
       return;
     }
 
     window.setContentProtection(true);
+
+    if (process.platform === 'win32') {
+      this.applyWin32Protection(window);
+    }
+  }
+
+  private applyWin32Protection(window: BrowserWindow): void {
+    if (window.isDestroyed()) {
+      return;
+    }
+
+    let hwnd: number;
+    try {
+      const buffer = window.getNativeWindowHandle();
+      hwnd = buffer.readUInt32LE(0);
+    } catch {
+      return;
+    }
+
+    const psScript = [
+      "Add-Type -TypeDefinition @'",
+      'using System;',
+      'using System.Runtime.InteropServices;',
+      'public class WingManProtect {',
+      '  [DllImport("user32.dll", SetLastError=true)]',
+      '  public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);',
+      '}',
+      "'@",
+      `[WingManProtect]::SetWindowDisplayAffinity([IntPtr]${hwnd}, 0x11)`,
+    ].join('\n');
+
+    const powershell =
+      `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+      execFileSync(
+        powershell,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-WindowStyle',
+          'Hidden',
+          '-Command',
+          psScript,
+        ],
+        {
+          timeout: 6000,
+          windowsHide: true,
+          stdio: 'ignore',
+        },
+      );
+    } catch (error) {
+      console.warn('[wingman] Direct Win32 protection call failed:', error);
+    }
   }
 
   private async loadRoute(window: BrowserWindow, route: string) {
@@ -213,6 +269,8 @@ export class WindowManager {
     } else {
       this.overlayWindow.showInactive();
     }
+
+    this.applyCaptureProtection(this.overlayWindow);
   }
 
   toggleOverlayMinimize() {
@@ -226,6 +284,8 @@ export class WindowManager {
     } else {
       this.overlayWindow.minimize();
     }
+
+    this.applyCaptureProtection(this.overlayWindow);
   }
 
   focusOverlayInput() {
@@ -237,6 +297,7 @@ export class WindowManager {
     this.overlayWindow.setFocusable(true);
     this.overlayWindow.focus();
     this.overlayWindow.webContents.send('overlay:focus-input');
+    this.applyCaptureProtection(this.overlayWindow);
   }
 
   releaseOverlayFocus() {
@@ -246,6 +307,7 @@ export class WindowManager {
 
     this.overlayWindow.blur();
     this.overlayWindow.setFocusable(false);
+    this.applyCaptureProtection(this.overlayWindow);
   }
 
   sendAppState(state: AppState) {

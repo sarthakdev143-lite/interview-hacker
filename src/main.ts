@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// Licensed under MIT + Commons Clause — commercial use prohibited.
+
 import {
   app,
   globalShortcut,

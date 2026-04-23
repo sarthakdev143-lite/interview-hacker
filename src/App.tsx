@@ -31,6 +31,7 @@ function DashboardApp() {
   const session = useSession();
   const stream = useStream(
     session.appState.serverPort,
+    session.appState.serverToken,
     session.appState.currentSessionId,
     session.appState.sessionStatus,
   );

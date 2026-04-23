@@ -64,6 +64,7 @@ export interface HealthPayload {
 export interface AppState {
   serverReady: boolean;
   serverPort: number | null;
+  serverToken: string | null;
   sessionStatus: SessionStatus;
   overlayVisible: boolean;
   overlayMinimized: boolean;

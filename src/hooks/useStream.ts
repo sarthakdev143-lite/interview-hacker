@@ -19,6 +19,7 @@ function resetAnswerTimeout(answerTimeout: MutableRefObject<number | null>) {
 
 export function useStream(
   serverPort: number | null,
+  serverToken: string | null,
   sessionId: string | null,
   sessionStatus: SessionStatus,
 ) {
@@ -46,15 +47,27 @@ export function useStream(
     setAnswer('');
     setStatus(sessionId ? 'listening' : sessionStatus === 'stopped' ? 'stopped' : 'idle');
     setStreamError(null);
+    const tokenQuery = serverToken
+      ? `?token=${encodeURIComponent(serverToken)}`
+      : '';
     const transcriptSource = new EventSource(
-      `http://127.0.0.1:${serverPort}/transcript/stream`,
+      `http://127.0.0.1:${serverPort}/transcript/stream${tokenQuery}`,
     );
     const answerSource = new EventSource(
-      `http://127.0.0.1:${serverPort}/answer/stream`,
+      `http://127.0.0.1:${serverPort}/answer/stream${tokenQuery}`,
     );
 
     const clearStreamError = () => {
       setStreamError(null);
+    };
+
+    const parsePayload = <T,>(raw: string) => {
+      try {
+        return JSON.parse(raw) as T;
+      } catch {
+        setStreamError('Live stream sent an invalid event. Waiting for recovery.');
+        return null;
+      }
     };
 
     transcriptSource.onopen = clearStreamError;
@@ -62,7 +75,10 @@ export function useStream(
 
     transcriptSource.onmessage = (event) => {
       clearStreamError();
-      const payload = JSON.parse(event.data) as TranscriptEventPayload;
+      const payload = parsePayload<TranscriptEventPayload>(event.data);
+      if (!payload) {
+        return;
+      }
       if (payload.type === 'status' && payload.status) {
         setStatus(payload.status);
         return;
@@ -86,7 +102,10 @@ export function useStream(
 
     answerSource.onmessage = (event) => {
       clearStreamError();
-      const payload = JSON.parse(event.data) as AnswerEventPayload;
+      const payload = parsePayload<AnswerEventPayload>(event.data);
+      if (!payload) {
+        return;
+      }
       if (payload.type === 'status' && payload.status) {
         if (payload.status === 'thinking') {
           setAnswer('');
@@ -122,7 +141,7 @@ export function useStream(
       transcriptSource.close();
       answerSource.close();
     };
-  }, [serverPort, sessionId, sessionStatus]);
+  }, [serverPort, serverToken, sessionId, sessionStatus]);
 
   useEffect(() => {
     if (sessionStatus === 'starting') {
@@ -155,6 +174,7 @@ export function useStream(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(serverToken ? { 'X-Wingman-Token': serverToken } : {}),
       },
       body: JSON.stringify({ prompt }),
     });

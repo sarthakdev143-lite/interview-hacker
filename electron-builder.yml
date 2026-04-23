@@ -1,6 +1,7 @@
 appId: com.wingman.desktop
 productName: WingMan
 asar: true
+icon: build/icon.ico
 
 directories:
   output: release
@@ -16,6 +17,7 @@ extraResources:
       - "**/*"
 
 win:
+  icon: build/icon.ico
   target:
     - nsis
   artifactName: WingMan-${version}-setup.${ext}

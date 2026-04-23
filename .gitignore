@@ -103,3 +103,8 @@ __pycache__/
 python/build/
 python/dist/
 .dev-server.json
+history/
+
+# Development prompt files
+PROMPT.md
+wingman-fixes-prompt.md

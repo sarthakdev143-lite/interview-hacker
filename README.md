@@ -1,53 +1,127 @@
-# WingMan
+<p align="center">
+  <img src="build/icon.png" alt="WingMan" width="96" height="96" />
+</p>
 
-WingMan is a desktop interview assistant built with Electron, React, Tailwind CSS, and a local Python service. It captures system audio, streams Groq Whisper transcriptions, detects likely interview questions, and renders protected answer overlays that stay out of common screen-capture paths via Electron content protection.
+<h1 align="center">WingMan</h1>
 
-## Features
+<p align="center">
+  A real-time desktop interview assistant that captures system audio, transcribes it with Groq Whisper, detects interview questions, and streams AI-generated answers to a protected floating overlay.
+</p>
 
-- Dashboard window for resume upload, extra context, model selection, overlay presets, API key storage, and session control
-- Floating protected overlay window with live transcript, streamed answer output, manual follow-up input, and global shortcuts
-- Local Flask service with SSE endpoints for transcript and answer streams
-- Groq-backed transcription with `whisper-large-v3-turbo`
-- Groq-backed answer streaming with `llama-3.3-70b-versatile` and alternative model options
-- Secure `GROQ_API_KEY` storage using Electron `safeStorage`
-- Session history saved to the app data folder only when history is enabled
+<p align="center">
+  <a href="https://github.com/sarthakdev143-lite/interview-hacker/releases"><img src="https://img.shields.io/github/v/release/sarthakdev143-lite/interview-hacker?style=flat-square&color=0ea5e9" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/sarthakdev143-lite/interview-hacker?style=flat-square&color=34d399" alt="License" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square" alt="Platform" />
+</p>
 
-## Development
+---
+
+## ✨ Features
+
+- **Real-time audio capture** — WASAPI loopback on Windows captures system audio without microphone access
+- **Groq Whisper transcription** — Live speech-to-text powered by `whisper-large-v3-turbo` with cross-chunk context for high accuracy
+- **Smart question detection** — Heuristic + LLM classifier pipeline identifies interview questions from general conversation
+- **Streamed AI answers** — Token-by-token answer generation using `llama-3.3-70b-versatile` (or alternative Groq models)
+- **Protected overlay** — Floating, draggable, resizable overlay with `setContentProtection(true)` — invisible to screen-share and capture tools
+- **Resume grounding** — Upload a PDF resume for answer personalization via PyMuPDF extraction
+- **Secure key storage** — API keys encrypted via Electron `safeStorage` (OS keychain)
+- **Session history** — Optionally persist question-answer exchanges as JSON for post-interview review
+- **Global shortcuts** — Toggle, minimize, and focus the overlay without leaving the interview window
+
+## 🔑 Prerequisites
+
+- A **[Groq API key](https://console.groq.com/keys)** (free tier works)
+- **Windows 10/11** (WASAPI loopback is used for audio capture)
+
+## 📥 Installation
+
+1. Download the latest `WingMan-X.X.X-setup.exe` from the [Releases](https://github.com/sarthakdev143-lite/interview-hacker/releases) page
+2. Run the installer — you can choose the install location
+3. Launch **WingMan** from the Start menu or desktop shortcut
+
+> **Note:** Windows Defender or your antivirus may flag the bundled Python server. This is a false positive caused by PyInstaller packaging. Add an exclusion for the WingMan install directory if prompted.
+
+## 🚀 Quick Start
+
+1. **Paste your Groq API key** in the dashboard and click **Save key**
+2. **Upload your resume** (PDF) or paste resume text directly
+3. **Add extra context** — job description, role expectations, panel details
+4. **Choose your model** and overlay preferences
+5. Click **Start session** — WingMan begins listening to system audio
+6. The floating overlay shows live transcript and streams answers when interview questions are detected
+
+## ⌨️ Global Shortcuts
+
+| Action | Shortcut |
+|---|---|
+| Toggle overlay visibility | `Ctrl+Shift+H` or `Ctrl+Alt+H` |
+| Minimize overlay | `Ctrl+Shift+M` or `Ctrl+Alt+M` |
+| Focus manual input | `Ctrl+Shift+Space` |
+
+## 🏗️ Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│  Electron Main Process                           │
+│  ├─ Window Manager (dashboard + overlay)         │
+│  ├─ Secure Store (safeStorage API keys)          │
+│  ├─ Python Server Manager (sidecar lifecycle)    │
+│  └─ IPC Handlers (trusted sender validation)     │
+├──────────────────────────────────────────────────┤
+│  React Renderer (Vite + Tailwind CSS)            │
+│  ├─ Dashboard: setup, history, settings          │
+│  └─ Overlay: transcript, answers, manual input   │
+├──────────────────────────────────────────────────┤
+│  Python Sidecar (Flask + SSE)                    │
+│  ├─ WASAPI Loopback Audio Capture                │
+│  ├─ Groq Whisper Transcription                   │
+│  ├─ Question Detection (heuristic + LLM)         │
+│  └─ Answer Streaming (Groq LLM)                  │
+└──────────────────────────────────────────────────┘
+```
+
+## 🛠️ Development
 
 ```bash
+# Clone the repository
+git clone https://github.com/sarthakdev143-lite/interview-hacker.git
+cd interview-hacker
+
 # Install Node dependencies
 npm install
 
-# Install Python dependencies
-cd python
-pip install -r requirements.txt
-cd ..
+# Create a Python virtual environment and install dependencies
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r python/requirements.txt
 
-# Development mode
+# Start development mode
 npm run dev
 ```
 
-`npm run dev` starts the Vite renderer, watches the Electron main/preload builds, launches Electron, and lets Electron start the local Python server automatically.
+`npm run dev` starts the Vite renderer, watches Electron main/preload builds, launches Electron, and starts the local Python server automatically.
 
-## Packaging
+### Environment Variables
+
+Copy `.env.example` to `.env` and fill in:
+
+| Variable | Description |
+|---|---|
+| `GROQ_API_KEY` | Optional fallback Groq API key (can also be set in the UI) |
+| `WINGMAN_PYTHON_BIN` | Optional path to a custom Python binary |
+
+## 📦 Building from Source
 
 ```bash
-# Install packaging dependencies for reproducible PyInstaller builds
+# Install PyInstaller dependencies
 pip install -r python/requirements-pyinstaller.txt
 
-# Build the Electron app bundles
-npm run build
-
-# Package with electron-builder
+# Build and package everything
 npm run package
 ```
 
-`npm run package` builds the Electron bundles, compiles the Python server into a sidecar executable with PyInstaller, and packages the desktop app with `electron-builder`.
+The installer will be created in the `release/` directory.
 
-If Windows Defender quarantines `python/dist/wingman-server/wingman-server.exe`, add an exclusion for `python/dist/wingman-server/` and rerun `npm run package`.
+## 📄 License
 
-## Notes
-
-- On Windows, install `pyaudiowpatch` for WASAPI loopback capture.
-- On macOS, install BlackHole and configure a Multi-Output Device before starting a session.
-- The overlay uses `BrowserWindow.setContentProtection(true)` so it is excluded from supported screen-capture APIs on Windows and macOS.
+[MIT](LICENSE) — Sarthak Parulekar

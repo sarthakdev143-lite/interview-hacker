@@ -76,6 +76,13 @@ export interface AppState {
   error: string | null;
 }
 
+export interface OverlayBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface TranscriptEventPayload {
   type: 'transcript' | 'status';
   text?: string;
@@ -105,6 +112,7 @@ export interface WingmanApi {
   stopSession: () => Promise<{ status: SessionStatus }>;
   toggleOverlay: () => Promise<AppState>;
   minimizeOverlay: () => Promise<AppState>;
+  setOverlayBounds: (bounds: OverlayBounds) => Promise<AppState>;
   moveOverlay: (bounds: { x: number; y: number }) => Promise<AppState>;
   resizeOverlay: (size: { width: number; height: number }) => Promise<AppState>;
   setOverlayOpacity: (opacity: number) => Promise<AppState>;

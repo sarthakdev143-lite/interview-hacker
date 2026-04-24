@@ -1,7 +1,7 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AppState, OverlayPreset } from './types/contracts';
+import type { AppState, OverlayBounds, OverlayPreset } from './types/contracts';
 
 export class WindowManager {
   dashboardWindow: BrowserWindow | null = null;
@@ -154,7 +154,9 @@ export class WindowManager {
       resizable: false,
       alwaysOnTop: true,
       skipTaskbar: true,
-      focusable: false,
+      // The overlay must stay focusable so it can still receive mouse input on
+      // Windows after the user switches back to the interview window.
+      focusable: true,
       fullscreenable: false,
       hasShadow: true,
       backgroundColor: '#00000000',
@@ -241,6 +243,22 @@ export class WindowManager {
     this.overlayWindow.setPosition(x, y);
   }
 
+  setOverlayBounds(bounds: OverlayBounds) {
+    if (!this.overlayWindow) {
+      return;
+    }
+
+    const normalizedWidth = Math.max(360, Math.min(bounds.width, 1100));
+    const normalizedHeight = Math.max(360, Math.min(bounds.height, 1200));
+
+    this.overlayWindow.setBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: normalizedWidth,
+      height: normalizedHeight,
+    });
+  }
+
   resizeOverlay(width: number, height: number) {
     if (!this.overlayWindow) {
       return;
@@ -294,7 +312,6 @@ export class WindowManager {
     }
 
     this.overlayWindow.show();
-    this.overlayWindow.setFocusable(true);
     this.overlayWindow.focus();
     this.overlayWindow.webContents.send('overlay:focus-input');
     this.applyCaptureProtection(this.overlayWindow);
@@ -306,7 +323,6 @@ export class WindowManager {
     }
 
     this.overlayWindow.blur();
-    this.overlayWindow.setFocusable(false);
     this.applyCaptureProtection(this.overlayWindow);
   }
 

@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AppState,
+  OverlayBounds,
   PublicSettings,
   StartSessionRequest,
   WingmanApi,
@@ -21,6 +22,8 @@ const api: WingmanApi = {
   stopSession: () => ipcRenderer.invoke('session:stop'),
   toggleOverlay: () => ipcRenderer.invoke('overlay:toggle'),
   minimizeOverlay: () => ipcRenderer.invoke('overlay:minimize'),
+  setOverlayBounds: (bounds: OverlayBounds) =>
+    ipcRenderer.invoke('overlay:set-bounds', bounds),
   moveOverlay: (bounds: { x: number; y: number }) =>
     ipcRenderer.invoke('overlay:move', bounds),
   resizeOverlay: (size: { width: number; height: number }) =>

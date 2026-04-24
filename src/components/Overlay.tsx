@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { TranscriptLine } from '../hooks/useStream';
-import type { AppState, SessionStatus } from '../types/contracts';
+import type { AppState, OverlayBounds, SessionStatus } from '../types/contracts';
 import { Transcript } from './Transcript';
 
 interface OverlayProps {
@@ -42,6 +42,7 @@ export function Overlay({
   onMinimize,
 }: OverlayProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
   const [manualPrompt, setManualPrompt] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [manualError, setManualError] = useState<string | null>(null);
@@ -52,6 +53,12 @@ export function Overlay({
       inputRef.current?.focus();
       inputRef.current?.select();
     });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      resizeCleanupRef.current?.();
+    };
   }, []);
 
   async function handleSubmit() {
@@ -77,16 +84,22 @@ export function Overlay({
   function beginResize(direction: ResizeDirection, event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     event.stopPropagation();
+    resizeCleanupRef.current?.();
     setActiveResize(direction);
 
+    const handleEl = event.currentTarget;
+    const pointerId = event.pointerId;
     const startPointerX = event.screenX;
     const startPointerY = event.screenY;
     const startWidth = window.outerWidth;
     const startHeight = window.outerHeight;
     const startX = window.screenX;
     const startY = window.screenY;
+    let frameId: number | null = null;
+    let pendingBounds: OverlayBounds | null = null;
+    let finished = false;
 
-    const handleMove = (moveEvent: PointerEvent) => {
+    const getNextBounds = (moveEvent: PointerEvent): OverlayBounds => {
       const deltaX = moveEvent.screenX - startPointerX;
       const deltaY = moveEvent.screenY - startPointerY;
 
@@ -110,21 +123,99 @@ export function Overlay({
         nextY = startY + (startHeight - nextHeight);
       }
 
-      void window.wingman.moveOverlay({ x: Math.round(nextX), y: Math.round(nextY) });
-      void window.wingman.resizeOverlay({
+      return {
+        x: Math.round(nextX),
+        y: Math.round(nextY),
         width: Math.round(nextWidth),
         height: Math.round(nextHeight),
+      };
+    };
+
+    const pushBounds = (bounds: OverlayBounds) => {
+      pendingBounds = bounds;
+      if (frameId !== null) {
+        return;
+      }
+
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        if (!pendingBounds) {
+          return;
+        }
+
+        const nextBounds = pendingBounds;
+        pendingBounds = null;
+        void window.wingman.setOverlayBounds(nextBounds);
       });
     };
 
-    const handleUp = () => {
-      setActiveResize(null);
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', handleUp);
+    const flushBounds = (bounds?: OverlayBounds) => {
+      if (bounds) {
+        pendingBounds = bounds;
+      }
+
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+
+      const nextBounds = pendingBounds;
+      pendingBounds = null;
+      if (nextBounds) {
+        void window.wingman.setOverlayBounds(nextBounds);
+      }
     };
 
+    const handleMove = (moveEvent: PointerEvent) => {
+      pushBounds(getNextBounds(moveEvent));
+    };
+
+    const finishResize = (moveEvent?: PointerEvent) => {
+      if (finished) {
+        return;
+      }
+
+      finished = true;
+      setActiveResize(null);
+      flushBounds(moveEvent ? getNextBounds(moveEvent) : undefined);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+      window.removeEventListener('pointercancel', handleCancel);
+      handleEl.removeEventListener('lostpointercapture', handleLostPointerCapture);
+
+      if (handleEl.hasPointerCapture(pointerId)) {
+        try {
+          handleEl.releasePointerCapture(pointerId);
+        } catch {
+          // Ignore capture release failures when Chromium already released it.
+        }
+      }
+
+      if (resizeCleanupRef.current === finishResize) {
+        resizeCleanupRef.current = null;
+      }
+    };
+
+    const handleUp = (upEvent: PointerEvent) => {
+      finishResize(upEvent);
+    };
+
+    const handleCancel = () => {
+      finishResize();
+    };
+
+    const handleLostPointerCapture = () => {
+      finishResize();
+    };
+
+    // Frameless Electron windows stop emitting raw move events once the cursor
+    // leaves the window unless the active handle captures the pointer first.
+    handleEl.setPointerCapture(pointerId);
     window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', handleUp, { once: true });
+    window.addEventListener('pointerup', handleUp);
+    window.addEventListener('pointercancel', handleCancel);
+    handleEl.addEventListener('lostpointercapture', handleLostPointerCapture);
+    resizeCleanupRef.current = finishResize;
   }
 
   const lastAnswer =

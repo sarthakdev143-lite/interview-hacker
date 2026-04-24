@@ -19,6 +19,7 @@ import {
 import { SecureStore } from './secureStore';
 import type {
   AppState,
+  OverlayBounds,
   OverlayPreset,
   PublicSettings,
   StartSessionRequest,
@@ -472,6 +473,17 @@ function installIpcHandlers() {
       Math.round(requireFiniteNumber(bounds?.x, 'x')),
       Math.round(requireFiniteNumber(bounds?.y, 'y')),
     );
+    updateState({});
+    return appState;
+  });
+  ipcMain.handle('overlay:set-bounds', async (event, bounds: OverlayBounds) => {
+    assertTrustedSender(event);
+    windowManager.setOverlayBounds({
+      x: Math.round(requireFiniteNumber(bounds?.x, 'x')),
+      y: Math.round(requireFiniteNumber(bounds?.y, 'y')),
+      width: Math.round(requireFiniteNumber(bounds?.width, 'width')),
+      height: Math.round(requireFiniteNumber(bounds?.height, 'height')),
+    });
     updateState({});
     return appState;
   });

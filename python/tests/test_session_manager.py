@@ -96,23 +96,23 @@ class SessionManagerTests(unittest.TestCase):
         with self.assertRaises(StopIteration):
             next(stream)
 
-    def test_final_deepgram_transcript_queues_detected_question(self):
+    def test_final_transcript_queues_detected_question(self):
         self.manager.llm = FakeLLM()
-        self.manager.transcriber = FakeTranscriber(self.manager._on_deepgram_transcript)
+        self.manager.transcriber = FakeTranscriber(self.manager._on_transcript)
 
-        self.manager._on_deepgram_transcript("What is React", is_final=True)
+        self.manager._on_transcript("What is React", is_final=True)
         self.manager._flush_pending_question_if_ready(force=True)
 
         question, local_queue = self.manager.answer_queue.get_nowait()
         self.assertEqual(question, "What is React")
         self.assertIsNone(local_queue)
 
-    def test_interim_deepgram_transcript_does_not_queue_question(self):
+    def test_interim_transcript_does_not_queue_question(self):
         self.manager.llm = FakeLLM()
         subscriber: queue.Queue = queue.Queue()
         self.manager.transcript_subscribers.add(subscriber)
 
-        self.manager._on_deepgram_transcript("What is React", is_final=False)
+        self.manager._on_transcript("What is React", is_final=False)
 
         payload = subscriber.get_nowait()
         self.assertEqual(
@@ -224,7 +224,7 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.exchanges, [])
 
     def test_quiet_speech_still_reaches_transcriber(self):
-        self.manager.transcriber = FakeTranscriber(self.manager._on_deepgram_transcript)
+        self.manager.transcriber = FakeTranscriber(self.manager._on_transcript)
 
         quiet_chunk = (np.ones(1024, dtype=np.int16) * 60).tobytes()
         self.manager._process_audio_chunk(quiet_chunk)

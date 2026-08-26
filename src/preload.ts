@@ -33,6 +33,7 @@ const api: WingmanApi = {
   releaseOverlayFocus: () => ipcRenderer.invoke('overlay:release-focus'),
   openHistoryFolder: () => ipcRenderer.invoke('history:open-folder'),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
+  listModels: () => ipcRenderer.invoke('app:list-models'),
   onAppState: (listener: (state: AppState) => void) => {
     const wrapped = (_event: unknown, state: AppState) => listener(state);
     ipcRenderer.on('app:state', wrapped);

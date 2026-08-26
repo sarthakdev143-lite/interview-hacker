@@ -2,11 +2,16 @@ import type { TranscriptLine } from '../hooks/useStream';
 
 interface TranscriptProps {
   lines: TranscriptLine[];
+  interimLine?: string;
   compact?: boolean;
 }
 
-export function Transcript({ lines, compact = false }: TranscriptProps) {
-  if (lines.length === 0) {
+export function Transcript({
+  lines,
+  interimLine = '',
+  compact = false,
+}: TranscriptProps) {
+  if (lines.length === 0 && !interimLine) {
     return (
       <div
         className={`rounded-[1.5rem] border border-dashed border-white/10 bg-slate-950/35 text-slate-500 ${
@@ -41,6 +46,16 @@ export function Transcript({ lines, compact = false }: TranscriptProps) {
             </p>
           </div>
         ))}
+
+        {interimLine && (
+          <div className="rounded-[1rem] border border-dashed border-white/10 bg-white/[0.015] px-3 py-2">
+            <p
+              className={`${compact ? 'text-xs' : 'text-sm'} leading-relaxed text-slate-500`}
+            >
+              {interimLine}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

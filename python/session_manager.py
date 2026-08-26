@@ -14,7 +14,8 @@ from uuid import uuid4
 
 from audio_capture import AudioCapture
 from llm import LLMClient
-from transcriber import Transcriber
+from transcriber import DEFAULT_STT_MODEL, create_transcriber
+from usage import UsageTracker
 
 # ---------------------------------------------------------------------------
 # Question-detection heuristics
@@ -173,6 +174,11 @@ MAX_QUESTION_SEGMENTS = 20
 MIN_SEGMENT_CHARS = 6
 CONTEXT_LOOKBACK_SEGMENTS = 6
 
+DEFAULT_TRANSCRIPTION_PROVIDER = "groq"
+
+# Spend updates are cheap to compute but noisy to stream, so they are throttled.
+USAGE_BROADCAST_INTERVAL_SECONDS = 3.0
+
 
 class SessionManager:
     def __init__(self, history_dir: str):
@@ -194,8 +200,12 @@ class SessionManager:
         self.session: dict = {}
         self.status = "stopped"
         self.capture: AudioCapture | None = None
-        self.transcriber: Transcriber | None = None
+        self.transcriber = None
         self.llm: LLMClient | None = None
+        self.transcription_provider = DEFAULT_TRANSCRIPTION_PROVIDER
+        self.model_fallback = ""
+        self.usage = UsageTracker()
+        self._usage_broadcast_at = 0.0
         self.audio_queue: queue.Queue[bytes] = queue.Queue(maxsize=512)
         self.answer_queue: queue.Queue[tuple[str, queue.Queue | None]] = queue.Queue()
         self.stop_event = threading.Event()
@@ -225,8 +235,9 @@ class SessionManager:
         language: str,
         model: str,
         api_key: str,
-        deepgram_api_key: str,
-        history_enabled: bool,
+        deepgram_api_key: str = "",
+        history_enabled: bool = False,
+        transcription_provider: str = DEFAULT_TRANSCRIPTION_PROVIDER,
     ) -> dict:
         self.stop_session()
 
@@ -242,11 +253,27 @@ class SessionManager:
             self.status = "listening"
             self.history_enabled = history_enabled
             self.started_at = time.time()
-            self.transcriber = Transcriber(
-                api_key=deepgram_api_key,
-                on_transcript=self._on_deepgram_transcript,
+            self.transcription_provider = transcription_provider
+            self.usage = UsageTracker(
+                provider=transcription_provider,
+                stt_model=DEFAULT_STT_MODEL,
             )
-            self.llm = LLMClient(api_key=api_key)
+            self.transcriber = create_transcriber(
+                transcription_provider,
+                on_transcript=self._on_transcript,
+                groq_api_key=api_key,
+                deepgram_api_key=deepgram_api_key,
+                language=language,
+                on_usage=self._on_audio_usage,
+                on_activity=self._on_speech_activity,
+                on_error=self._on_transcriber_error,
+            )
+            self.llm = LLMClient(api_key=api_key, on_usage=self._on_llm_usage)
+            # Groq retires model IDs, and a saved preference outlives them, so
+            # reconcile before the first question rather than failing on it.
+            resolution = self.llm.resolve_models(model)
+            self.session["model"] = resolution["answer_model"]
+            self.model_fallback = resolution["fell_back_from"]
             self.capture = AudioCapture(self._enqueue_audio)
             try:
                 self.transcriber.start()
@@ -268,7 +295,25 @@ class SessionManager:
                 raise
 
         self._broadcast_transcript({"type": "status", "status": "listening"})
-        return {"session_id": self.session_id, "status": self.status}
+        self._broadcast_usage(force=True)
+        if self.model_fallback:
+            self._broadcast_transcript(
+                {
+                    "type": "notice",
+                    "message": (
+                        f"{self.model_fallback} is not available on this API key. "
+                        f"Using {self.session['model']} instead."
+                    ),
+                }
+            )
+
+        return {
+            "session_id": self.session_id,
+            "status": self.status,
+            "transcription_provider": self.transcription_provider,
+            "model": self.session.get("model", ""),
+            "model_fallback": self.model_fallback,
+        }
 
     def stop_session(self) -> dict:
         capture = self.capture
@@ -299,10 +344,13 @@ class SessionManager:
             self._save_history(session_snapshot)
 
         self.status = "stopped"
+        # Final spend figure while the tracker is still the session's own.
+        final_usage = self._usage_snapshot()
+        self._broadcast_transcript({"type": "usage", "usage": final_usage})
         self._broadcast_transcript({"type": "status", "status": "stopped"})
         self._broadcast_answer({"type": "status", "status": "stopped"})
         self._reset_runtime()
-        return {"status": "stopped"}
+        return {"status": "stopped", "usage": final_usage}
 
     def manual_answer(self, prompt: str) -> Generator[dict, None, None]:
         if not self.llm or not self.session_id:
@@ -326,6 +374,9 @@ class SessionManager:
         with self.subscriber_lock:
             self.answer_subscribers.add(subscriber)
         return self._yield_queue(subscriber, kind="answer")
+
+    def current_usage(self) -> dict:
+        return self._usage_snapshot()
 
     def list_history(self) -> list:
         sessions = []
@@ -436,7 +487,7 @@ class SessionManager:
             return
         self.transcriber.feed(audio_chunk)
 
-    def _on_deepgram_transcript(self, text: str, is_final: bool):
+    def _on_transcript(self, text: str, is_final: bool):
         normalized = " ".join(text.split()).strip()
         if not normalized:
             return
@@ -453,6 +504,51 @@ class SessionManager:
                 "is_question": False,
             }
         )
+
+    def _on_speech_activity(self, active: bool):
+        """Keeps the overlay responsive while a batch transcript is in flight.
+
+        The Groq provider only produces text once an utterance ends, so without
+        this the UI would sit on "listening" through the whole question.
+        """
+        if self.stop_event.is_set() or not self.session_id:
+            return
+
+        if active:
+            self.status = "transcribing"
+            self._broadcast_transcript({"type": "status", "status": "transcribing"})
+
+    def _on_transcriber_error(self, message: str):
+        self._broadcast_transcript({"type": "error", "message": message})
+
+    # ------------------------------------------------------------------
+    # Usage accounting
+    # ------------------------------------------------------------------
+
+    def _on_audio_usage(self, seconds: float):
+        self.usage.record_audio(seconds)
+
+    def _on_llm_usage(self, model: str, prompt_tokens: int, completion_tokens: int):
+        self.usage.record_llm(
+            model,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+        )
+
+    def _usage_snapshot(self) -> dict:
+        # Deepgram bills for the time the socket is open, so its running total
+        # is wall clock rather than the speech the VAD measured.
+        if self.transcription_provider == "deepgram" and self.started_at:
+            self.usage.set_stream_seconds(time.time() - self.started_at)
+        return self.usage.snapshot()
+
+    def _broadcast_usage(self, force: bool = False):
+        now = time.time()
+        if not force and (now - self._usage_broadcast_at) < USAGE_BROADCAST_INTERVAL_SECONDS:
+            return
+
+        self._usage_broadcast_at = now
+        self._broadcast_transcript({"type": "usage", "usage": self._usage_snapshot()})
 
     # ------------------------------------------------------------------
     # Transcript to question detection
@@ -491,6 +587,7 @@ class SessionManager:
                 "is_question": has_question_signal or has_prompt_signal,
             }
         )
+        self._broadcast_usage()
 
     def _flush_pending_question_if_ready(self, force: bool = False):
         if not self.pending_question_segments:
@@ -634,6 +731,7 @@ class SessionManager:
             self._broadcast_transcript({"type": "status", "status": "listening"})
             self.status = "listening"
             self._last_enqueued_question = ""
+            self._broadcast_usage(force=True)
 
     # ------------------------------------------------------------------
     # Broadcast helpers

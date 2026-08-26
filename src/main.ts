@@ -17,12 +17,15 @@ import {
   type PythonServerExitInfo,
 } from './pythonServer';
 import { SecureStore } from './secureStore';
-import type {
-  AppState,
-  OverlayBounds,
-  OverlayPreset,
-  PublicSettings,
-  StartSessionRequest,
+import {
+  DEFAULT_ANSWER_MODEL,
+  TRANSCRIPTION_PROVIDERS,
+  type AppState,
+  type OverlayBounds,
+  type OverlayPreset,
+  type PublicSettings,
+  type StartSessionRequest,
+  type TranscriptionProvider,
 } from './types/contracts';
 import { WindowManager } from './windowManager';
 
@@ -142,7 +145,7 @@ function normalizeSettingsUpdates(
     normalized.language = String(updates.language).trim() || 'en';
   }
   if (updates.model !== undefined) {
-    normalized.model = String(updates.model).trim() || 'llama-3.3-70b-versatile';
+    normalized.model = String(updates.model).trim() || DEFAULT_ANSWER_MODEL;
   }
   if (updates.overlayPreset !== undefined) {
     const preset = updates.overlayPreset as OverlayPreset;
@@ -159,6 +162,13 @@ function normalizeSettingsUpdates(
   }
   if (updates.historyEnabled !== undefined) {
     normalized.historyEnabled = Boolean(updates.historyEnabled);
+  }
+  if (updates.transcriptionProvider !== undefined) {
+    const provider = updates.transcriptionProvider as TranscriptionProvider;
+    if (!TRANSCRIPTION_PROVIDERS.includes(provider)) {
+      throw new Error('Invalid transcription provider.');
+    }
+    normalized.transcriptionProvider = provider;
   }
   return normalized;
 }
@@ -309,12 +319,22 @@ async function startSession(config: StartSessionRequest) {
     throw new Error('A Groq API key is required before starting a session.');
   }
 
+  const provider: TranscriptionProvider = TRANSCRIPTION_PROVIDERS.includes(
+    config.transcriptionProvider,
+  )
+    ? config.transcriptionProvider
+    : 'groq';
+
   const deepgramApiKey =
     config.deepgramApiKey?.trim() ||
     (await secureStore.getDeepgramApiKey()) ||
     '';
-  if (!deepgramApiKey) {
-    throw new Error('A Deepgram API key is required before starting a session.');
+  // Only the opt-in Deepgram provider needs a second key; the default Groq
+  // provider transcribes with the key that already generates answers.
+  if (provider === 'deepgram' && !deepgramApiKey) {
+    throw new Error(
+      'A Deepgram API key is required for the Deepgram provider. Switch to Groq transcription to run on a single key.',
+    );
   }
 
   if (config.apiKey?.trim()) {
@@ -338,6 +358,7 @@ async function startSession(config: StartSessionRequest) {
       language: config.language,
       model: config.model,
       history_enabled: config.historyEnabled,
+      transcription_provider: provider,
       api_key: apiKey,
       deepgram_api_key: deepgramApiKey,
     }),
@@ -351,6 +372,7 @@ async function startSession(config: StartSessionRequest) {
     overlayPreset: config.overlayPreset,
     overlayOpacity: config.overlayOpacity,
     historyEnabled: config.historyEnabled,
+    transcriptionProvider: provider,
   });
 
   updateState({
@@ -514,6 +536,24 @@ function installIpcHandlers() {
     assertTrustedSender(event);
     await shell.openPath(historyPath);
     return { path: historyPath };
+  });
+  ipcMain.handle('app:list-models', async (event) => {
+    assertTrustedSender(event);
+    const apiKey =
+      (await secureStore.getApiKey()) || process.env.GROQ_API_KEY?.trim() || '';
+    if (!apiKey) {
+      return { models: [], recommended: DEFAULT_ANSWER_MODEL };
+    }
+
+    await ensureServerReady(appState.sessionStatus);
+    return pythonServer.request<{ models: string[]; recommended: string }>(
+      '/models',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: apiKey }),
+      },
+    );
   });
   ipcMain.handle('app:open-external', async (event, url: string) => {
     assertTrustedSender(event);

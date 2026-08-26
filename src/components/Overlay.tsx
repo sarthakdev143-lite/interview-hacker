@@ -6,6 +6,7 @@ import { Transcript } from './Transcript';
 interface OverlayProps {
   appState: AppState;
   transcriptLines: TranscriptLine[];
+  interimLine?: string;
   answer: string;
   status: SessionStatus;
   onManualSubmit: (prompt: string) => Promise<void>;
@@ -35,6 +36,7 @@ function clamp(value: number, min: number, max: number) {
 export function Overlay({
   appState,
   transcriptLines,
+  interimLine = '',
   answer,
   status,
   onManualSubmit,
@@ -295,7 +297,7 @@ export function Overlay({
                   Live
                 </p>
               </div>
-              <Transcript compact lines={transcriptLines} />
+              <Transcript compact interimLine={interimLine} lines={transcriptLines} />
             </div>
 
             <div className="rounded-[1.35rem] border border-white/10 bg-slate-950/48 p-4">

@@ -4,6 +4,26 @@ export type OverlayPreset =
   | 'top-right'
   | 'top-left';
 
+/**
+ * `groq` segments audio locally and only uploads speech, so it reuses the Groq
+ * key and costs nothing on the free tier. `deepgram` is lower latency but
+ * needs a second paid key and bills for connection time.
+ */
+export type TranscriptionProvider = 'groq' | 'deepgram';
+
+export const TRANSCRIPTION_PROVIDERS: TranscriptionProvider[] = ['groq', 'deepgram'];
+
+/**
+ * Groq retires model IDs periodically, so this is only the starting point.
+ * The picker is repopulated from the account's live model list at runtime.
+ */
+export const DEFAULT_ANSWER_MODEL = 'openai/gpt-oss-120b';
+
+export interface ModelCatalog {
+  models: string[];
+  recommended: string;
+}
+
 export type SessionStatus =
   | 'booting'
   | 'ready'
@@ -25,6 +45,7 @@ export interface StartSessionRequest {
   overlayPreset: OverlayPreset;
   overlayOpacity: number;
   historyEnabled: boolean;
+  transcriptionProvider: TranscriptionProvider;
   apiKey?: string;
   deepgramApiKey?: string;
 }
@@ -35,8 +56,22 @@ export interface PublicSettings {
   overlayPreset: OverlayPreset;
   overlayOpacity: number;
   historyEnabled: boolean;
+  transcriptionProvider: TranscriptionProvider;
   apiKeyStored: boolean;
   deepgramApiKeyStored: boolean;
+}
+
+/** Running spend for the active session, measured by the Python backend. */
+export interface UsageSnapshot {
+  provider: string;
+  audio_seconds: number;
+  stt_requests: number;
+  stt_usd: number;
+  llm_requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  llm_usd: number;
+  estimated_usd: number;
 }
 
 export interface HistoryExchange {
@@ -57,6 +92,8 @@ export interface HealthPayload {
   port: number;
   platform: string;
   capture_warning: boolean;
+  transcription_providers?: string[];
+  default_transcription_provider?: string;
   audio: {
     ready: boolean;
     message: string;
@@ -84,10 +121,13 @@ export interface OverlayBounds {
 }
 
 export interface TranscriptEventPayload {
-  type: 'transcript' | 'status';
+  type: 'transcript' | 'status' | 'usage' | 'error' | 'notice';
   text?: string;
   is_question?: boolean;
+  interim?: boolean;
   status?: SessionStatus;
+  usage?: UsageSnapshot;
+  message?: string;
 }
 
 export interface AnswerEventPayload {
@@ -119,6 +159,7 @@ export interface WingmanApi {
   releaseOverlayFocus: () => Promise<{ ok: true }>;
   openHistoryFolder: () => Promise<{ path: string }>;
   openExternal: (url: string) => Promise<{ ok: true }>;
+  listModels: () => Promise<ModelCatalog>;
   onAppState: (listener: (state: AppState) => void) => () => void;
   onOverlayFocusInput: (listener: () => void) => () => void;
 }

@@ -15,9 +15,19 @@ from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from werkzeug.serving import make_server
 
+from groq import Groq
+
 from audio_capture import probe_audio_environment
+from llm import (
+    ANSWER_MODEL_PREFERENCES,
+    DEFAULT_ANSWER_MODEL,
+    list_chat_models,
+    pick_model,
+)
 from resume_parser import extract_text_from_pdf
-from session_manager import SessionManager
+from session_manager import DEFAULT_TRANSCRIPTION_PROVIDER, SessionManager
+
+SUPPORTED_TRANSCRIPTION_PROVIDERS = ("groq", "deepgram")
 
 app = Flask(__name__)
 CORS(
@@ -62,21 +72,35 @@ def start_session():
     api_key = str(payload.get("api_key", "")).strip()
     if not api_key:
         return jsonify({"error": "api_key is required"}), 400
+
+    provider = str(
+        payload.get("transcription_provider") or DEFAULT_TRANSCRIPTION_PROVIDER
+    ).strip().lower()
+    if provider not in SUPPORTED_TRANSCRIPTION_PROVIDERS:
+        return jsonify({"error": f"Unsupported transcription provider: {provider}"}), 400
+
     deepgram_api_key = str(
         payload.get("deepgram_api_key") or os.environ.get("DEEPGRAM_API_KEY", "")
     ).strip()
-    if not deepgram_api_key:
+    # Only the Deepgram provider needs a second key. The default Groq provider
+    # reuses the key that already powers answer generation.
+    if provider == "deepgram" and not deepgram_api_key:
         return jsonify({"error": "deepgram_api_key is required"}), 400
 
-    result = sessions.start_session(
-        resume_text=str(payload.get("resume_text", "")).strip(),
-        extra_context=str(payload.get("extra_context", "")).strip(),
-        language=str(payload.get("language", "en")).strip() or "en",
-        model=str(payload.get("model", "llama-3.3-70b-versatile")).strip(),
-        api_key=api_key,
-        deepgram_api_key=deepgram_api_key,
-        history_enabled=bool(payload.get("history_enabled", False)),
-    )
+    try:
+        result = sessions.start_session(
+            resume_text=str(payload.get("resume_text", "")).strip(),
+            extra_context=str(payload.get("extra_context", "")).strip(),
+            language=str(payload.get("language", "en")).strip() or "en",
+            model=str(payload.get("model") or DEFAULT_ANSWER_MODEL).strip(),
+            api_key=api_key,
+            deepgram_api_key=deepgram_api_key,
+            history_enabled=bool(payload.get("history_enabled", False)),
+            transcription_provider=provider,
+        )
+    except (RuntimeError, ValueError) as error:
+        return jsonify({"error": str(error)}), 400
+
     return jsonify(result)
 
 
@@ -150,6 +174,34 @@ def get_history():
     return jsonify({"sessions": sessions.list_history()})
 
 
+@app.get("/usage")
+def get_usage():
+    return jsonify({"usage": sessions.current_usage()})
+
+
+@app.post("/models")
+def get_models():
+    """Chat models this API key can actually reach.
+
+    Groq retires model IDs, so the picker is populated from the live account
+    rather than a hard-coded list that silently goes stale.
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    api_key = str(payload.get("api_key", "")).strip()
+    if not api_key:
+        return jsonify({"error": "api_key is required"}), 400
+
+    models = list_chat_models(Groq(api_key=api_key))
+    return jsonify(
+        {
+            "models": models,
+            "recommended": pick_model(
+                ANSWER_MODEL_PREFERENCES, models, DEFAULT_ANSWER_MODEL
+            ),
+        }
+    )
+
+
 @app.get("/health")
 def health():
     audio_probe = probe_audio_environment()
@@ -158,6 +210,8 @@ def health():
             "status": "ok",
             "port": server_holder["port"],
             "platform": sys.platform,
+            "transcription_providers": list(SUPPORTED_TRANSCRIPTION_PROVIDERS),
+            "default_transcription_provider": DEFAULT_TRANSCRIPTION_PROVIDER,
             "capture_warning": sys.platform == "win32"
             and _platform.version() < "10.0.22621",
             "audio": {

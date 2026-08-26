@@ -1,7 +1,12 @@
 import { safeStorage } from 'electron';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { OverlayPreset, PublicSettings } from './types/contracts';
+import {
+  DEFAULT_ANSWER_MODEL,
+  type OverlayPreset,
+  type PublicSettings,
+  type TranscriptionProvider,
+} from './types/contracts';
 
 interface PersistedStore {
   encryptedApiKey?: string;
@@ -11,14 +16,17 @@ interface PersistedStore {
   overlayPreset?: OverlayPreset;
   overlayOpacity?: number;
   historyEnabled?: boolean;
+  transcriptionProvider?: TranscriptionProvider;
 }
 
 const DEFAULT_SETTINGS: Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'> = {
   language: 'en',
-  model: 'llama-3.3-70b-versatile',
+  model: DEFAULT_ANSWER_MODEL,
   overlayPreset: 'bottom-right',
   overlayOpacity: 0.95,
   historyEnabled: false,
+  // Groq needs no second key and is free on the free tier.
+  transcriptionProvider: 'groq',
 };
 
 export class SecureStore {
@@ -50,6 +58,8 @@ export class SecureStore {
       overlayPreset: store.overlayPreset ?? DEFAULT_SETTINGS.overlayPreset,
       overlayOpacity: store.overlayOpacity ?? DEFAULT_SETTINGS.overlayOpacity,
       historyEnabled: store.historyEnabled ?? DEFAULT_SETTINGS.historyEnabled,
+      transcriptionProvider:
+        store.transcriptionProvider ?? DEFAULT_SETTINGS.transcriptionProvider,
       apiKeyStored: Boolean(store.encryptedApiKey || process.env.GROQ_API_KEY?.trim()),
       deepgramApiKeyStored: Boolean(store.encryptedDeepgramApiKey),
     };

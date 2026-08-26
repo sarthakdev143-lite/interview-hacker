@@ -46,6 +46,7 @@ function DashboardApp() {
       <Overlay
         answer={stream.answer}
         appState={session.appState}
+        interimLine={stream.interimLine}
         onManualSubmit={stream.submitManualPrompt}
         onMinimize={session.minimizeOverlay}
         onStop={session.stopSession}
@@ -194,6 +195,8 @@ function DashboardApp() {
                   appState={session.appState}
                   canStart={session.canStart}
                   draft={session.draft}
+                  models={session.models}
+                  notice={stream.notice}
                   onClearApiKey={session.clearApiKey}
                   onClearDeepgramApiKey={session.clearDeepgramApiKey}
                   onDraftChange={(field, value) =>
@@ -214,6 +217,7 @@ function DashboardApp() {
                   sessionRunning={session.sessionRunning}
                   settings={session.settings}
                   transcriptLines={stream.transcriptLines}
+                  usage={stream.usage}
                 />
               }
               path="/dashboard"

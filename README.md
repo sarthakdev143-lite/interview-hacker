@@ -5,7 +5,7 @@
 <h1 align="center">WingMan</h1>
 
 <p align="center">
-  A real-time desktop interview assistant that captures system audio, transcribes it with Groq Whisper, detects interview questions, and streams AI-generated answers to a protected floating overlay.
+  A real-time desktop interview assistant that captures system audio, transcribes it, detects interview questions, and streams AI-generated answers to a protected floating overlay — on a single free API key.
 </p>
 
 <p align="center">
@@ -18,8 +18,12 @@
 
 ## ✨ Features
 
+- **Runs on one free key** — transcription and answers both use Groq, whose free tier normally covers an entire interview at no cost
 - **Real-time audio capture** — WASAPI loopback on Windows captures system audio without microphone access
-- **Groq Whisper transcription** — Live speech-to-text powered by `whisper-large-v3-turbo` with cross-chunk context for high accuracy
+- **Pay for speech, not silence** — a local voice-activity detector segments the stream and uploads only speech, so pauses cost nothing
+- **Groq Whisper transcription** — Speech-to-text powered by `whisper-large-v3-turbo` with cross-utterance context for high accuracy
+- **Live cost meter** — the dashboard shows exactly what the running session has spent
+- **Optional Deepgram engine** — opt in for lower-latency streaming with live partial text, at roughly 9x the cost
 - **Smart question detection** — Heuristic + LLM classifier pipeline identifies interview questions from general conversation
 - **Streamed AI answers** — Token-by-token answer generation using `llama-3.3-70b-versatile` (or alternative Groq models)
 - **Protected overlay** — Floating, draggable, resizable overlay with `setContentProtection(true)` — invisible to screen-share and capture tools
@@ -30,8 +34,11 @@
 
 ## 🔑 Prerequisites
 
-- A **[Groq API key](https://console.groq.com/keys)** (free tier works)
+- A **[Groq API key](https://console.groq.com/keys)** (free tier works — this is the only key you need)
 - **Windows 10/11** (WASAPI loopback is used for audio capture)
+
+A **[Deepgram key](https://console.deepgram.com/)** is optional, and only if you
+switch the transcription engine to Deepgram in the dashboard.
 
 ## 📥 Installation
 
@@ -43,7 +50,7 @@
 
 ## 🚀 Quick Start
 
-1. **Paste your Groq API key** in the dashboard and click **Save key**
+1. **Paste your Groq API key** in the dashboard and click **Save key** — that is the only key required
 2. **Upload your resume** (PDF) or paste resume text directly
 3. **Add extra context** — job description, role expectations, panel details
 4. **Choose your model** and overlay preferences
@@ -74,11 +81,27 @@
 ├──────────────────────────────────────────────────┤
 │  Python Sidecar (Flask + SSE)                    │
 │  ├─ WASAPI Loopback Audio Capture                │
-│  ├─ Groq Whisper Transcription                   │
+│  ├─ Voice Activity Detection (silence is free)   │
+│  ├─ Transcription (Groq Whisper | Deepgram)      │
 │  ├─ Question Detection (heuristic + LLM)         │
-│  └─ Answer Streaming (Groq LLM)                  │
+│  ├─ Answer Streaming (Groq LLM)                  │
+│  └─ Usage / cost metering                        │
 └──────────────────────────────────────────────────┘
 ```
+
+## 💸 What a session costs
+
+The default engine uploads only detected speech, so a long interview with
+ordinary pauses is billed for a fraction of its wall-clock length.
+
+| Engine | Billed on | 1 hr interview (~25 min speech) |
+|---|---|---|
+| Groq Whisper (default) | speech only | ~$0.017, or $0 on the free tier |
+| Deepgram streaming | connection time | ~$0.35 |
+
+Answers add roughly $0.001–0.01 per interview depending on the model. The
+dashboard shows the running total, and `GET /usage` on the local backend
+returns the same figures.
 
 ## 🛠️ Development
 
@@ -108,6 +131,7 @@ Copy `.env.example` to `.env` and fill in:
 | Variable | Description |
 |---|---|
 | `GROQ_API_KEY` | Optional fallback Groq API key (can also be set in the UI) |
+| `DEEPGRAM_API_KEY` | Optional, only for the Deepgram transcription engine |
 | `WINGMAN_PYTHON_BIN` | Optional path to a custom Python binary |
 
 ## 📦 Building from Source

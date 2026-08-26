@@ -3,6 +3,7 @@ import type {
   AnswerEventPayload,
   SessionStatus,
   TranscriptEventPayload,
+  UsageSnapshot,
 } from '../types/contracts';
 
 export interface TranscriptLine {
@@ -24,6 +25,9 @@ export function useStream(
   sessionStatus: SessionStatus,
 ) {
   const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
+  const [interimLine, setInterimLine] = useState('');
+  const [notice, setNotice] = useState('');
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
   const [answer, setAnswer] = useState('');
   const [status, setStatus] = useState<SessionStatus>('idle');
   const [streamError, setStreamError] = useState<string | null>(null);
@@ -37,6 +41,7 @@ export function useStream(
     if (!serverPort) {
       resetAnswerTimeout(answerTimeout);
       setTranscriptLines([]);
+      setInterimLine('');
       setAnswer('');
       setStatus('idle');
       return;
@@ -44,6 +49,7 @@ export function useStream(
 
     resetAnswerTimeout(answerTimeout);
     setTranscriptLines([]);
+    setInterimLine('');
     setAnswer('');
     setStatus(sessionId ? 'listening' : sessionStatus === 'stopped' ? 'stopped' : 'idle');
     setStreamError(null);
@@ -84,7 +90,33 @@ export function useStream(
         return;
       }
 
+      if (payload.type === 'usage' && payload.usage) {
+        setUsage(payload.usage);
+        return;
+      }
+
+      if (payload.type === 'error') {
+        setStreamError(payload.message ?? 'Transcription failed.');
+        return;
+      }
+
+      // Informational, not a failure — e.g. a saved model that Groq retired
+      // and the backend swapped out so the session could still start.
+      if (payload.type === 'notice') {
+        setNotice(payload.message ?? '');
+        return;
+      }
+
       if (payload.type === 'transcript' && payload.text) {
+        // Streaming providers refine an interim line word by word. Holding it
+        // separately keeps those partials from stacking up as history.
+        if (payload.interim) {
+          setInterimLine(payload.text);
+          setStatus('transcribing');
+          return;
+        }
+
+        setInterimLine('');
         setTranscriptLines((current) => [
           ...current.slice(-11),
           {
@@ -147,6 +179,9 @@ export function useStream(
     if (sessionStatus === 'starting') {
       resetAnswerTimeout(answerTimeout);
       setTranscriptLines([]);
+      setInterimLine('');
+      setUsage(null);
+      setNotice('');
       setAnswer('');
       setStatus('starting');
       setStreamError(null);
@@ -156,6 +191,7 @@ export function useStream(
     if (sessionStatus === 'stopped' || sessionStatus === 'idle' || sessionStatus === 'ready') {
       resetAnswerTimeout(answerTimeout);
       setTranscriptLines([]);
+      setInterimLine('');
       setAnswer('');
       setStatus(sessionStatus);
     }
@@ -186,6 +222,9 @@ export function useStream(
 
   return {
     transcriptLines,
+    interimLine,
+    usage,
+    notice,
     answer,
     status,
     streamError,

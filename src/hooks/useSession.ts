@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getServerBaseUrl, loadHistory, uploadResume } from '../lib/backend';
-import type {
-  AppState,
-  PublicSettings,
-  SessionHistoryRecord,
-  StartSessionRequest,
+import {
+  DEFAULT_ANSWER_MODEL,
+  type AppState,
+  type PublicSettings,
+  type SessionHistoryRecord,
+  type StartSessionRequest,
 } from '../types/contracts';
 
 export interface SessionDraft extends StartSessionRequest {
@@ -14,10 +15,11 @@ export interface SessionDraft extends StartSessionRequest {
 
 const defaultSettings: PublicSettings = {
   language: 'en',
-  model: 'llama-3.3-70b-versatile',
+  model: DEFAULT_ANSWER_MODEL,
   overlayPreset: 'bottom-right',
   overlayOpacity: 0.95,
   historyEnabled: false,
+  transcriptionProvider: 'groq',
   apiKeyStored: false,
   deepgramApiKeyStored: false,
 };
@@ -43,6 +45,7 @@ export function useSession() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState(false);
   const [savingDeepgramKey, setSavingDeepgramKey] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
   const [draft, setDraft] = useState<SessionDraft>({
     resumeText: '',
     extraContext: '',
@@ -51,6 +54,7 @@ export function useSession() {
     overlayPreset: defaultSettings.overlayPreset,
     overlayOpacity: defaultSettings.overlayOpacity,
     historyEnabled: defaultSettings.historyEnabled,
+    transcriptionProvider: defaultSettings.transcriptionProvider,
     apiKeyInput: '',
     deepgramApiKeyInput: '',
   });
@@ -82,6 +86,7 @@ export function useSession() {
           overlayPreset: nextSettings.overlayPreset,
           overlayOpacity: nextSettings.overlayOpacity,
           historyEnabled: nextSettings.historyEnabled,
+          transcriptionProvider: nextSettings.transcriptionProvider,
         }));
       } catch (error) {
         if (!isActive) {
@@ -149,15 +154,55 @@ export function useSession() {
     };
   }, [appState.serverPort, appState.serverToken, appState.currentSessionId]);
 
+  // The account's real model list. Groq retires IDs, so a stale saved model
+  // must not be the only thing on offer.
+  useEffect(() => {
+    if (!appState.serverReady) {
+      return;
+    }
+
+    let isActive = true;
+
+    async function refreshModels() {
+      try {
+        const catalog = await window.wingman.listModels();
+        if (!isActive || catalog.models.length === 0) {
+          return;
+        }
+
+        setModels(catalog.models);
+        setDraft((current) =>
+          catalog.models.includes(current.model)
+            ? current
+            : { ...current, model: catalog.recommended },
+        );
+      } catch {
+        // A missing catalog just leaves the saved model in place.
+      }
+    }
+
+    void refreshModels();
+
+    return () => {
+      isActive = false;
+    };
+  }, [appState.serverReady, settings.apiKeyStored]);
+
   const serverBaseUrl = useMemo(
     () => getServerBaseUrl(appState.serverPort),
     [appState.serverPort],
   );
 
+  // The Groq provider transcribes with the answer key, so a second key is only
+  // a precondition when the user opted into Deepgram.
+  const deepgramKeyReady =
+    draft.transcriptionProvider !== 'deepgram' ||
+    Boolean(settings.deepgramApiKeyStored || draft.deepgramApiKeyInput.trim());
+
   const canStart =
     Boolean(draft.resumeText.trim() || draft.extraContext.trim()) &&
     Boolean(settings.apiKeyStored || draft.apiKeyInput.trim()) &&
-    Boolean(settings.deepgramApiKeyStored || draft.deepgramApiKeyInput.trim());
+    deepgramKeyReady;
 
   const sessionRunning =
     appState.sessionStatus !== 'idle' &&
@@ -172,6 +217,7 @@ export function useSession() {
       overlayPreset: draft.overlayPreset,
       overlayOpacity: draft.overlayOpacity,
       historyEnabled: draft.historyEnabled,
+      transcriptionProvider: draft.transcriptionProvider,
     });
     setSettings(nextSettings);
   }
@@ -262,6 +308,7 @@ export function useSession() {
         overlayPreset: draft.overlayPreset,
         overlayOpacity: draft.overlayOpacity,
         historyEnabled: draft.historyEnabled,
+        transcriptionProvider: draft.transcriptionProvider,
         apiKey: draft.apiKeyInput.trim() || undefined,
         deepgramApiKey: draft.deepgramApiKeyInput.trim() || undefined,
       });
@@ -273,6 +320,7 @@ export function useSession() {
         overlayPreset: draft.overlayPreset,
         overlayOpacity: draft.overlayOpacity,
         historyEnabled: draft.historyEnabled,
+        transcriptionProvider: draft.transcriptionProvider,
         apiKeyStored: current.apiKeyStored || Boolean(draft.apiKeyInput.trim()),
         deepgramApiKeyStored:
           current.deepgramApiKeyStored || Boolean(draft.deepgramApiKeyInput.trim()),
@@ -360,6 +408,7 @@ export function useSession() {
     settings,
     draft,
     setDraft,
+    models,
     history,
     historyLoading,
     resumeUploading,

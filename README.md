@@ -148,4 +148,6 @@ The installer will be created in the `release/` directory.
 
 ## 📄 License
 
-[MIT](LICENSE) — Sarthak Parulekar
+[MIT with Commons Clause](LICENSE) — Sarthak Parulekar. Free to use, modify, and
+distribute for non-commercial purposes; the Commons Clause prohibits selling
+the software or a service substantially derived from it.

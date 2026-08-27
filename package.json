@@ -1,7 +1,7 @@
 {
   "name": "wingman",
   "productName": "WingMan",
-  "version": "0.0.5-alpha",
+  "version": "0.1.0",
   "description": "A real-time desktop interview assistant built with Electron, React, and Python.",
   "main": "dist/main/main.js",
   "private": true,
@@ -28,7 +28,7 @@
     "name": "Sarthak Parulekar",
     "email": "sarthakdev143.official@gmail.com"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "devDependencies": {
     "@types/node": "^22.16.5",
     "@types/react": "^18.3.18",

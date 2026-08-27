@@ -168,7 +168,22 @@ FILLER_PATTERNS = frozenset(
 # Timing constants
 # ---------------------------------------------------------------------------
 
+# How long to wait after a transcript before treating the question as finished.
+#
+# Deepgram emits several finals per sentence, so the window is what joins them
+# back into one question.
 QUESTION_SETTLE_SECONDS = 0.45
+
+# The Groq provider segments on silence locally and only ever emits complete
+# utterances, so there is nothing to wait for. Measured end to end, the 0.45 s
+# window was 455 ms of a 1233 ms end-of-question-to-first-token budget, and it
+# joined nothing: a pause long enough to split an utterance (700 ms of VAD
+# hangover) already pushes the next transcript well outside the window. A short
+# window remains only to absorb two utterances finishing near-simultaneously.
+UTTERANCE_SETTLE_SECONDS = 0.08
+
+# Providers that deliver whole utterances rather than incremental fragments.
+COMPLETE_UTTERANCE_PROVIDERS = frozenset({"groq"})
 
 MAX_QUESTION_SEGMENTS = 20
 MIN_SEGMENT_CHARS = 6
@@ -203,6 +218,7 @@ class SessionManager:
         self.transcriber = None
         self.llm: LLMClient | None = None
         self.transcription_provider = DEFAULT_TRANSCRIPTION_PROVIDER
+        self.question_settle_seconds = QUESTION_SETTLE_SECONDS
         self.model_fallback = ""
         self.usage = UsageTracker()
         self._usage_broadcast_at = 0.0
@@ -254,6 +270,11 @@ class SessionManager:
             self.history_enabled = history_enabled
             self.started_at = time.time()
             self.transcription_provider = transcription_provider
+            self.question_settle_seconds = (
+                UTTERANCE_SETTLE_SECONDS
+                if transcription_provider in COMPLETE_UTTERANCE_PROVIDERS
+                else QUESTION_SETTLE_SECONDS
+            )
             self.usage = UsageTracker(
                 provider=transcription_provider,
                 stt_model=DEFAULT_STT_MODEL,
@@ -593,7 +614,7 @@ class SessionManager:
         if not self.pending_question_segments:
             return
 
-        if not force and (time.time() - self.last_transcript_at) < QUESTION_SETTLE_SECONDS:
+        if not force and (time.time() - self.last_transcript_at) < self.question_settle_seconds:
             return
 
         segments = list(self.pending_question_segments)

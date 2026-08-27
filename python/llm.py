@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 from groq import Groq
@@ -30,9 +31,10 @@ Extra Context:
 
 QUESTION_CHECK_PROMPT = """
 You classify transcript snippets from an interview.
-The text may be a raw transcript or an English translation of the spoken audio.
+The text may be in any language, and may be a raw transcript of spoken audio.
 Answer with only YES or NO.
 Return YES only if the text is clearly an interview question or interview prompt directed at the candidate.
+An imperative request such as "tell me about a time you..." is an interview prompt, whatever the language.
 """
 
 DEFAULT_ANSWER_MODEL = "openai/gpt-oss-120b"
@@ -69,8 +71,58 @@ NON_CHAT_MARKERS = ("whisper", "orpheus", "prompt-guard", "guard", "tts", "embed
 ANSWER_MAX_TOKENS = 900
 CLASSIFIER_MAX_TOKENS = 96
 
+# Rate limiting is the expected failure mode on a free tier, not an exception,
+# so it is retried rather than surfaced as a dead session.
+LLM_MAX_ATTEMPTS = 3
+LLM_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
+# Nobody waits half a minute mid-interview; past this, move on and say so.
+MAX_RETRY_WAIT_SECONDS = 10.0
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
 # (model, prompt_tokens, completion_tokens)
 UsageCallback = Callable[[str, int, int], None]
+# (human-readable reason, seconds about to be waited)
+RetryCallback = Callable[[str, float], None]
+
+
+def status_of(error: Exception) -> int | None:
+    status = getattr(error, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def is_rate_limit(error: Exception) -> bool:
+    return status_of(error) == 429
+
+
+def is_retryable(error: Exception) -> bool:
+    status = status_of(error)
+    if status is not None:
+        return status in RETRYABLE_STATUS
+
+    name = type(error).__name__.lower()
+    return any(marker in name for marker in ("connection", "timeout"))
+
+
+def retry_after_seconds(error: Exception) -> float | None:
+    """Groq reports how long to wait; honouring it beats guessing a backoff."""
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+
+    try:
+        raw = headers.get("retry-after")
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    if not raw:
+        return None
+
+    try:
+        # Groq sends plain seconds; some gateways append a unit suffix.
+        return max(0.0, float(str(raw).strip().rstrip("s")))
+    except ValueError:
+        return None
 
 
 def is_reasoning_model(model: str) -> bool:
@@ -130,11 +182,13 @@ class LLMClient:
         on_usage: UsageCallback | None = None,
         answer_model: str | None = None,
         classifier_model: str | None = None,
+        on_retry: RetryCallback | None = None,
     ):
         self.client = Groq(api_key=api_key)
         self.default_model = answer_model or DEFAULT_ANSWER_MODEL
         self.classifier_model = classifier_model or DEFAULT_CLASSIFIER_MODEL
         self.on_usage = on_usage
+        self.on_retry = on_retry
         self.available_models: list[str] = []
 
     # ------------------------------------------------------------------
@@ -180,7 +234,7 @@ class LLMClient:
     # Completions
     # ------------------------------------------------------------------
 
-    def _create(self, *, model: str, messages: list, max_tokens: int, stream: bool, temperature: float):
+    def _request(self, model: str, messages: list, max_tokens: int, stream: bool, temperature: float):
         options = {
             "model": model,
             "messages": messages,
@@ -199,6 +253,88 @@ class LLMClient:
                 options.pop("reasoning_effort")
                 return self.client.chat.completions.create(**options)
             raise
+
+    def _sibling_model(self, primary: str) -> str | None:
+        """A different live model to try when `primary` is rate limited.
+
+        Groq meters per model, so the quickest way past a 429 is usually a
+        different model rather than a longer wait.
+        """
+        for candidate in ANSWER_MODEL_PREFERENCES:
+            if candidate != primary and candidate in self.available_models:
+                return candidate
+        return None
+
+    def _notify_retry(self, message: str, wait_seconds: float) -> None:
+        if self.on_retry is None:
+            return
+        try:
+            self.on_retry(message, wait_seconds)
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    def _create(
+        self,
+        *,
+        model: str,
+        messages: list,
+        max_tokens: int,
+        stream: bool,
+        temperature: float,
+        allow_model_fallback: bool = False,
+    ):
+        """Creates a completion, riding out transient failures.
+
+        Only the create call is retried. Once a stream starts yielding it is
+        never restarted, because the caller has already shown those tokens.
+        """
+        models = [model]
+        if allow_model_fallback:
+            sibling = self._sibling_model(model)
+            if sibling:
+                models.append(sibling)
+
+        last_error: Exception | None = None
+
+        for index, candidate in enumerate(models):
+            for attempt in range(LLM_MAX_ATTEMPTS):
+                try:
+                    return self._request(candidate, messages, max_tokens, stream, temperature)
+                except Exception as error:
+                    last_error = error
+                    if not is_retryable(error):
+                        raise
+
+                    if attempt == LLM_MAX_ATTEMPTS - 1:
+                        break
+
+                    wait = retry_after_seconds(error)
+                    if wait is None:
+                        wait = LLM_RETRY_BACKOFF_SECONDS[
+                            min(attempt, len(LLM_RETRY_BACKOFF_SECONDS) - 1)
+                        ]
+                    wait = min(wait, MAX_RETRY_WAIT_SECONDS)
+
+                    reason = (
+                        f"{candidate} is rate limited"
+                        if is_rate_limit(error)
+                        else f"{candidate} request failed ({type(error).__name__})"
+                    )
+                    print(f"[wingman] {reason}; retrying in {wait:.1f}s")
+                    self._notify_retry(reason, wait)
+                    time.sleep(wait)
+
+            # Switching models only helps for a per-model quota.
+            is_last_model = index == len(models) - 1
+            if is_last_model or last_error is None or not is_rate_limit(last_error):
+                break
+
+            print(f"[wingman] Falling back from {candidate} to {models[index + 1]}")
+            self._notify_retry(
+                f"{candidate} is still rate limited; trying {models[index + 1]}", 0.0
+            )
+
+        raise last_error if last_error else RuntimeError("Completion failed.")
 
     def is_question(self, transcript: str) -> bool:
         if not transcript.strip():
@@ -234,6 +370,7 @@ class LLMClient:
             temperature=0.35,
             max_tokens=ANSWER_MAX_TOKENS,
             stream=True,
+            allow_model_fallback=True,
         )
 
         for chunk in stream:

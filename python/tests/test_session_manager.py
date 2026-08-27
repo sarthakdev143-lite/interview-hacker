@@ -282,5 +282,87 @@ class SettleWindowTests(unittest.TestCase):
 
 
 
+class MultilingualDetectionTests(unittest.TestCase):
+    """English keyword lists cannot speak for other languages.
+
+    In a non-English session their silence is a false negative, so the
+    classifier is consulted instead of dropping the utterance.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.manager = SessionManager(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _session(self, language):
+        self.manager.session = {
+            "resume_text": "",
+            "extra_context": "",
+            "language": language,
+            "model": "openai/gpt-oss-120b",
+        }
+
+    def test_english_sessions_never_take_the_extra_call(self):
+        self._session("en")
+
+        self.assertFalse(
+            self.manager._needs_classifier("Muchas gracias por acompanarnos hoy")
+        )
+
+    def test_a_missing_language_is_treated_as_english(self):
+        self.manager.session = {}
+
+        self.assertFalse(self.manager._needs_classifier("cuentame sobre tu experiencia"))
+
+    def test_non_english_imperatives_reach_the_classifier(self):
+        self._session("es")
+        self.manager.llm = FakeLLM()
+
+        # No question mark and no English keyword: previously dropped outright.
+        self.manager._publish_transcript("Cuentame sobre un problema que resolviste")
+
+        self.assertTrue(self.manager._needs_classifier("Cuentame sobre un problema"))
+        self.assertEqual(
+            self.manager.pending_question_segments,
+            ["Cuentame sobre un problema que resolviste"],
+        )
+
+    def test_a_punctuated_question_still_skips_the_classifier(self):
+        """The question mark is language-agnostic, so it stays the fast path."""
+        self._session("es")
+        self.manager.llm = NeverClassifierLLM()
+
+        self.manager._publish_transcript("Que es un decorador en Python?")
+        self.manager._flush_pending_question_if_ready(force=True)
+
+        question, _ = self.manager.answer_queue.get_nowait()
+        self.assertEqual(question, "Que es un decorador en Python?")
+
+    def test_back_channel_noise_is_too_short_to_be_worth_a_call(self):
+        self._session("es")
+
+        for noise in ("si", "vale", "de acuerdo"):
+            self.assertFalse(self.manager._needs_classifier(noise), noise)
+
+    def test_a_monologue_is_too_long_to_be_worth_a_call(self):
+        self._session("es")
+
+        monologue = " ".join(["palabra"] * (session_manager.MAX_CLASSIFIER_WORDS + 5))
+
+        self.assertFalse(self.manager._needs_classifier(monologue))
+
+    def test_the_bounds_admit_a_normal_interview_prompt(self):
+        self._session("fr")
+
+        self.assertTrue(
+            self.manager._needs_classifier(
+                "Parlez-moi d une panne que vous avez geree recemment"
+            )
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

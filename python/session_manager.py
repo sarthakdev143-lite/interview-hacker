@@ -13,7 +13,7 @@ from typing import Generator, Iterable
 from uuid import uuid4
 
 from audio_capture import AudioCapture
-from llm import LLMClient
+from llm import LLMClient, is_rate_limit
 from transcriber import DEFAULT_STT_MODEL, create_transcriber
 from usage import UsageTracker
 
@@ -187,6 +187,12 @@ COMPLETE_UTTERANCE_PROVIDERS = frozenset({"groq"})
 
 MAX_QUESTION_SEGMENTS = 20
 MIN_SEGMENT_CHARS = 6
+
+# Bounds on what a non-English utterance must look like before it is worth a
+# classifier call: long enough to be a real prompt, short enough not to be a
+# monologue the candidate is already answering.
+MIN_CLASSIFIER_WORDS = 3
+MAX_CLASSIFIER_WORDS = 60
 CONTEXT_LOOKBACK_SEGMENTS = 6
 
 DEFAULT_TRANSCRIPTION_PROVIDER = "groq"
@@ -289,7 +295,11 @@ class SessionManager:
                 on_activity=self._on_speech_activity,
                 on_error=self._on_transcriber_error,
             )
-            self.llm = LLMClient(api_key=api_key, on_usage=self._on_llm_usage)
+            self.llm = LLMClient(
+                api_key=api_key,
+                on_usage=self._on_llm_usage,
+                on_retry=self._on_llm_retry,
+            )
             # Groq retires model IDs, and a saved preference outlives them, so
             # reconcile before the first question rather than failing on it.
             resolution = self.llm.resolve_models(model)
@@ -549,6 +559,14 @@ class SessionManager:
     def _on_audio_usage(self, seconds: float):
         self.usage.record_audio(seconds)
 
+    def _on_llm_retry(self, reason: str, wait_seconds: float):
+        detail = (
+            f"{reason}. Retrying in {wait_seconds:.0f}s."
+            if wait_seconds >= 1
+            else f"{reason}."
+        )
+        self._broadcast_transcript({"type": "notice", "message": detail})
+
     def _on_llm_usage(self, model: str, prompt_tokens: int, completion_tokens: int):
         self.usage.record_llm(
             model,
@@ -590,12 +608,21 @@ class SessionManager:
         has_question_signal = self._looks_like_question(normalized)
         has_prompt_signal = self._looks_like_interview_prompt(normalized)
         has_answer_lead_in = self._looks_like_candidate_answer(normalized)
+        # The heuristics are English keyword lists, so in another language their
+        # silence is not evidence of anything. Buffer the utterance anyway and
+        # let the classifier decide.
+        needs_classifier = self._needs_classifier(normalized)
 
         if self.pending_question_segments and has_answer_lead_in:
             print(f"[wingman] Answer lead-in, early flush: {normalized!r}")
             self._flush_pending_question_if_ready(force=True)
             self.pending_utterance_segments.append(normalized)
-        elif has_question_signal or has_prompt_signal or self.pending_question_segments:
+        elif (
+            has_question_signal
+            or has_prompt_signal
+            or needs_classifier
+            or self.pending_question_segments
+        ):
             if len(self.pending_question_segments) < MAX_QUESTION_SEGMENTS:
                 self.pending_question_segments.append(normalized)
         else:
@@ -636,6 +663,7 @@ class SessionManager:
         if not (
             self._looks_like_question(question)
             or self._looks_like_interview_prompt(question)
+            or self._needs_classifier(question)
         ):
             print(f"[wingman] No question signal, skipping classifier: {question!r:.120}")
             self._go_listening()
@@ -732,7 +760,13 @@ class SessionManager:
                 tokens.append(token)
                 fan({"type": "token", "text": token})
         except Exception as error:
-            fallback = "I lost the answer stream. Please ask the question again."
+            if is_rate_limit(error):
+                fallback = (
+                    "Groq is rate limiting this API key right now. "
+                    "Wait a few seconds, then ask again."
+                )
+            else:
+                fallback = "I lost the answer stream. Please ask the question again."
             print(f"[wingman] Answer generation failed: {error}")
             tokens = [fallback]
             fan({"type": "token", "text": fallback})
@@ -784,6 +818,28 @@ class SessionManager:
     # ------------------------------------------------------------------
     # Heuristics
     # ------------------------------------------------------------------
+
+    def _is_english_session(self) -> bool:
+        return str(self.session.get("language", "en")).strip().lower().startswith("en")
+
+    def _needs_classifier(self, text: str) -> bool:
+        """Whether an utterance with no English signal still deserves a look.
+
+        Every heuristic in this module is an English keyword list, so for a
+        Spanish or Hindi interview they can only ever produce false negatives:
+        "¿qué es...?" is caught by the question mark, but an imperative like
+        "cuéntame sobre..." matches nothing and would be silently dropped.
+
+        Rather than hand-maintain prefix lists per language, spend a classifier
+        call. It runs on the cheap model at roughly 36 completion tokens, about
+        $0.00002 - far below the cost of missing the question. Bounds keep it
+        from firing on back-channel noise or a full monologue.
+        """
+        if self._is_english_session():
+            return False
+
+        words = text.split()
+        return MIN_CLASSIFIER_WORDS <= len(words) <= MAX_CLASSIFIER_WORDS
 
     @staticmethod
     def _looks_like_question(text: str) -> bool:

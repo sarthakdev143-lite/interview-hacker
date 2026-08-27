@@ -93,6 +93,35 @@ It was ~1230 ms until `QUESTION_SETTLE_SECONDS` was made provider-aware. Before
 tuning any of these, re-measure — the stages interact, and the hangover is
 partly hidden by the speaker's own trailing silence.
 
+### Non-English interviews
+
+Every heuristic in `session_manager.py` is an English keyword list, so in another
+language they only ever produce false negatives. A punctuated question works in
+any language because Whisper supplies the `?`, but an imperative prompt
+("cuéntame sobre…", "erzählen Sie mir von…") matches nothing.
+
+`_needs_classifier()` closes that gap: in a non-English session an utterance with
+no English signal is buffered and sent to the classifier rather than dropped,
+bounded by `MIN_CLASSIFIER_WORDS`/`MAX_CLASSIFIER_WORDS` so back-channel noise and
+monologues do not trigger calls. English sessions are unaffected and take no
+extra calls. **Both** gates matter — `_publish_transcript` decides whether the
+text is buffered at all, and `_flush_pending_question_if_ready` decides whether
+it reaches the classifier; fixing only the second one changes nothing.
+
+### Rate limits
+
+On a free tier a 429 is an expected condition, not an exception. `LLMClient._create()`
+retries transient failures (429/408/5xx/connection) up to `LLM_MAX_ATTEMPTS`,
+preferring the server's `retry-after` header over a guessed backoff and capping
+any wait at `MAX_RETRY_WAIT_SECONDS` — nobody waits 30 s mid-interview. Groq
+meters per model, so a persistently rate-limited answer falls back to a sibling
+model from `ANSWER_MODEL_PREFERENCES` rather than waiting longer.
+
+Only the *create* call is retried. A stream that has already yielded tokens is
+never restarted, because the candidate has already seen them. Retries surface in
+the UI as `notice` events, and an exhausted rate limit says so plainly instead of
+the generic "I lost the answer stream".
+
 ### Cost accounting
 
 [python/usage.py](python/usage.py) tracks session spend: transcription seconds (exact, from the VAD) and LLM tokens (real counts from `chunk.x_groq.usage` on the final streamed chunk). Snapshots reach the UI as `usage` events on the transcript SSE stream and via `GET /usage`. Deepgram bills connection time, so its total is wall clock (`set_stream_seconds`) rather than the speech the VAD measured — that asymmetry is the whole point of the comparison the UI shows.

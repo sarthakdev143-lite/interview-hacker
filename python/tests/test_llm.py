@@ -8,14 +8,20 @@ PYTHON_DIR = Path(__file__).resolve().parents[1]
 if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
+import llm  # noqa: E402
 from llm import (  # noqa: E402
     ANSWER_MODEL_PREFERENCES,
     DEFAULT_ANSWER_MODEL,
+    LLM_MAX_ATTEMPTS,
+    MAX_RETRY_WAIT_SECONDS,
     LLMClient,
     is_chat_model,
+    is_rate_limit,
     is_reasoning_model,
+    is_retryable,
     list_chat_models,
     pick_model,
+    retry_after_seconds,
 )
 
 
@@ -229,6 +235,191 @@ class CreateOptionsTests(unittest.TestCase):
         self.assertEqual(result, "response")
         self.assertEqual(len(completions.calls), 2)
         self.assertNotIn("reasoning_effort", completions.calls[1])
+
+
+class ApiError(Exception):
+    """Stands in for a groq SDK APIStatusError."""
+
+    def __init__(self, status_code, retry_after=None):
+        super().__init__(f"Error code: {status_code}")
+        self.status_code = status_code
+        if retry_after is not None:
+            self.response = type(
+                "Response", (), {"headers": {"retry-after": retry_after}}
+            )()
+
+
+class ErrorClassificationTests(unittest.TestCase):
+    def test_rate_limits_are_recognised(self):
+        self.assertTrue(is_rate_limit(ApiError(429)))
+        self.assertFalse(is_rate_limit(ApiError(400)))
+
+    def test_transient_statuses_are_retryable(self):
+        for status in (408, 429, 500, 502, 503, 504):
+            self.assertTrue(is_retryable(ApiError(status)), status)
+
+    def test_client_errors_are_not_retryable(self):
+        for status in (400, 401, 403, 404):
+            self.assertFalse(is_retryable(ApiError(status)), status)
+
+    def test_connection_failures_are_retryable(self):
+        class APIConnectionError(Exception):
+            pass
+
+        self.assertTrue(is_retryable(APIConnectionError("boom")))
+
+    def test_retry_after_header_is_honoured(self):
+        self.assertEqual(retry_after_seconds(ApiError(429, retry_after="7")), 7.0)
+        self.assertEqual(retry_after_seconds(ApiError(429, retry_after="2.5s")), 2.5)
+
+    def test_missing_or_junk_retry_after_is_ignored(self):
+        self.assertIsNone(retry_after_seconds(ApiError(429)))
+        self.assertIsNone(retry_after_seconds(ApiError(429, retry_after="soon")))
+
+
+class RetryBehaviourTests(unittest.TestCase):
+    class FlakyCompletions:
+        def __init__(self, failures, status=429, retry_after=None):
+            self.remaining = failures
+            self.status = status
+            self.retry_after = retry_after
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if self.remaining > 0:
+                self.remaining -= 1
+                raise ApiError(self.status, self.retry_after)
+            return "ok"
+
+    def _client(self, completions, available=None):
+        client = LLMClient(api_key="test-key")
+        chat = type("Chat", (), {})()
+        chat.completions = completions
+        client.client = type("Client", (), {"chat": chat})()
+        client.available_models = available or []
+        return client
+
+    def setUp(self):
+        self.slept = []
+        self._real_sleep = llm.time.sleep
+        llm.time.sleep = self.slept.append
+
+    def tearDown(self):
+        llm.time.sleep = self._real_sleep
+
+    def test_a_transient_rate_limit_is_ridden_out(self):
+        completions = self.FlakyCompletions(failures=1)
+        client = self._client(completions)
+
+        result = client._create(
+            model="openai/gpt-oss-120b",
+            messages=[],
+            max_tokens=900,
+            stream=False,
+            temperature=0.35,
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(len(completions.calls), 2)
+        self.assertEqual(len(self.slept), 1)
+
+    def test_the_servers_retry_after_beats_the_default_backoff(self):
+        completions = self.FlakyCompletions(failures=1, retry_after="4")
+        client = self._client(completions)
+
+        client._create(
+            model="openai/gpt-oss-120b",
+            messages=[],
+            max_tokens=900,
+            stream=False,
+            temperature=0.35,
+        )
+
+        self.assertEqual(self.slept, [4.0])
+
+    def test_an_absurd_retry_after_is_capped(self):
+        completions = self.FlakyCompletions(failures=1, retry_after="600")
+        client = self._client(completions)
+
+        client._create(
+            model="openai/gpt-oss-120b",
+            messages=[],
+            max_tokens=900,
+            stream=False,
+            temperature=0.35,
+        )
+
+        self.assertEqual(self.slept, [MAX_RETRY_WAIT_SECONDS])
+
+    def test_a_bad_request_is_not_retried(self):
+        completions = self.FlakyCompletions(failures=5, status=400)
+        client = self._client(completions)
+
+        with self.assertRaises(ApiError):
+            client._create(
+                model="openai/gpt-oss-120b",
+                messages=[],
+                max_tokens=900,
+                stream=False,
+                temperature=0.35,
+            )
+
+        self.assertEqual(len(completions.calls), 1)
+        self.assertEqual(self.slept, [])
+
+    def test_a_persistent_rate_limit_switches_model(self):
+        """Groq meters per model, so a sibling is faster than a longer wait."""
+        completions = self.FlakyCompletions(failures=LLM_MAX_ATTEMPTS)
+        client = self._client(
+            completions, available=["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+        )
+
+        result = client._create(
+            model="openai/gpt-oss-120b",
+            messages=[],
+            max_tokens=900,
+            stream=False,
+            temperature=0.35,
+            allow_model_fallback=True,
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(completions.calls[-1]["model"], "openai/gpt-oss-20b")
+
+    def test_without_fallback_it_gives_up_after_the_attempt_budget(self):
+        completions = self.FlakyCompletions(failures=99)
+        client = self._client(completions)
+
+        with self.assertRaises(ApiError):
+            client._create(
+                model="openai/gpt-oss-120b",
+                messages=[],
+                max_tokens=900,
+                stream=False,
+                temperature=0.35,
+            )
+
+        self.assertEqual(len(completions.calls), LLM_MAX_ATTEMPTS)
+
+    def test_the_user_is_told_a_retry_is_happening(self):
+        notices = []
+        completions = self.FlakyCompletions(failures=1, retry_after="3")
+        client = self._client(completions)
+        client.on_retry = lambda reason, wait: notices.append((reason, wait))
+
+        client._create(
+            model="openai/gpt-oss-120b",
+            messages=[],
+            max_tokens=900,
+            stream=False,
+            temperature=0.35,
+        )
+
+        self.assertEqual(len(notices), 1)
+        self.assertIn("rate limited", notices[0][0])
+        self.assertEqual(notices[0][1], 3.0)
+
 
 
 if __name__ == "__main__":

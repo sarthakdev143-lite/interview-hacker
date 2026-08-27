@@ -309,6 +309,59 @@ function registerShortcuts() {
   });
 }
 
+interface ModelCatalogCache {
+  fetchedAt: number;
+  catalog: { models: string[]; recommended: string };
+}
+
+let modelCatalogCache: ModelCatalogCache | null = null;
+let modelCatalogInFlight: Promise<ModelCatalogCache['catalog']> | null = null;
+const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Both windows run the same renderer hook, so an uncached call meant several
+ * round trips to Groq every launch for a list that changes maybe monthly.
+ */
+async function listModels() {
+  const cached = modelCatalogCache;
+  if (cached && Date.now() - cached.fetchedAt < MODEL_CATALOG_TTL_MS) {
+    return cached.catalog;
+  }
+
+  if (modelCatalogInFlight) {
+    return modelCatalogInFlight;
+  }
+
+  modelCatalogInFlight = (async () => {
+    const apiKey =
+      (await secureStore.getApiKey()) || process.env.GROQ_API_KEY?.trim() || '';
+    if (!apiKey) {
+      return { models: [], recommended: DEFAULT_ANSWER_MODEL };
+    }
+
+    await ensureServerReady(appState.sessionStatus);
+    const catalog = await pythonServer.request<{
+      models: string[];
+      recommended: string;
+    }>('/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+
+    // Only a real answer is worth caching; an empty list usually means the key
+    // was missing or the lookup failed, and should be retried.
+    if (catalog.models.length > 0) {
+      modelCatalogCache = { fetchedAt: Date.now(), catalog };
+    }
+    return catalog;
+  })().finally(() => {
+    modelCatalogInFlight = null;
+  });
+
+  return modelCatalogInFlight;
+}
+
 async function startSession(config: StartSessionRequest) {
   await ensureServerReady('idle');
   const apiKey =
@@ -442,11 +495,13 @@ function installIpcHandlers() {
   ipcMain.handle('app:save-api-key', async (event, apiKey: string) => {
     assertTrustedSender(event);
     await secureStore.saveApiKey(apiKey);
+    modelCatalogCache = null;
     return { ok: true };
   });
   ipcMain.handle('app:clear-api-key', async (event) => {
     assertTrustedSender(event);
     await secureStore.clearApiKey();
+    modelCatalogCache = null;
     return { ok: true };
   });
   ipcMain.handle('app:save-deepgram-api-key', async (event, apiKey: string) => {
@@ -539,21 +594,7 @@ function installIpcHandlers() {
   });
   ipcMain.handle('app:list-models', async (event) => {
     assertTrustedSender(event);
-    const apiKey =
-      (await secureStore.getApiKey()) || process.env.GROQ_API_KEY?.trim() || '';
-    if (!apiKey) {
-      return { models: [], recommended: DEFAULT_ANSWER_MODEL };
-    }
-
-    await ensureServerReady(appState.sessionStatus);
-    return pythonServer.request<{ models: string[]; recommended: string }>(
-      '/models',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ api_key: apiKey }),
-      },
-    );
+    return listModels();
   });
   ipcMain.handle('app:open-external', async (event, url: string) => {
     assertTrustedSender(event);

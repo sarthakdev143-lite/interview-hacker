@@ -4,18 +4,12 @@ import { pathToFileURL } from 'node:url';
 import type { AppState, OverlayBounds, OverlayPreset } from './types/contracts';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { spawn, execFile } = require('node:child_process') as typeof import('node:child_process');
+const { execFile } = require('node:child_process') as typeof import('node:child_process');
 
 export class WindowManager {
   dashboardWindow: BrowserWindow | null = null;
 
   overlayWindow: BrowserWindow | null = null;
-
-  /**
-   * Tracks window IDs that currently have a Win32 protection job in-flight.
-   * Prevents spawning multiple PowerShell processes for the same window.
-   */
-  private readonly pendingWin32 = new Set<number>();
 
   constructor(private readonly preloadPath: string) {}
 
@@ -67,143 +61,36 @@ export class WindowManager {
   }
 
   /**
-   * Applies all available capture-protection layers for the current platform.
-   * - All platforms : Electron setContentProtection (instant)
-   * - Windows       : SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE=0x11) async
-   * - Linux/X11     : _NET_WM_BYPASS_COMPOSITOR hint via xprop
+   * Applies capture protection for the current platform.
+   * - macOS   : NSWindowSharingNone
+   * - Windows : SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE = 0x11)
+   * - Linux   : best-effort X11 hint, plus the _NET_WM_BYPASS_COMPOSITOR below
+   *
+   * `setContentProtection` does all of this natively and synchronously. On
+   * Windows it applies WDA_EXCLUDEFROMCAPTURE — the affinity that removes the
+   * window from Windows Graphics Capture, which is what Teams, Zoom, Meet and
+   * OBS use — not the weaker WDA_MONITOR.
+   *
+   * This previously shelled out to PowerShell to set the affinity by hand, on
+   * the belief that Electron only managed WDA_MONITOR. That is no longer true:
+   * reading GetWindowDisplayAffinity back off both live windows returns 0x11
+   * with the PowerShell path disabled entirely. The subprocess compiled C# via
+   * Add-Type on every one of the eight lifecycle events below, and under
+   * startup contention it hit its own 10s timeout and fell through to a
+   * `pwsh.exe` that is absent on stock Windows, logging failures for work that
+   * had already succeeded. Verify with GetWindowDisplayAffinity before
+   * reintroducing anything like it.
    */
   private applyCaptureProtection(window: BrowserWindow): void {
     if (window.isDestroyed()) return;
 
-    // Layer 1 (all platforms): Electron built-in.
-    //   macOS  → NSWindowSharingNone  (bulletproof)
-    //   Windows → WDA_MONITOR (0x01)  (shows black, instant fallback)
-    //   Linux  → best-effort X11 hint
     window.setContentProtection(true);
 
-    if (process.platform === 'win32') {
-      // Layer 2: WDA_EXCLUDEFROMCAPTURE (0x11) — fully removes the window from
-      // Windows Graphics Capture, which is used by Teams, Zoom, Meet, OBS, and
-      // every modern screen-share tool.  Applied asynchronously so the main
-      // process event loop is never blocked.
-      this.scheduleWin32Protection(window);
-    }
-
     if (process.platform === 'linux') {
-      // Layer 2: Ask the compositor to bypass this window so it is not included
-      // in desktop-level captures.  Best-effort; silently ignored when xprop is
-      // not available or on Wayland.
+      // Ask the compositor to exclude the window from desktop-level captures.
+      // Best-effort; silently ignored without xprop, and on Wayland.
       this.applyLinuxHint(window);
     }
-  }
-
-  // ─── Windows ───────────────────────────────────────────────────────────────
-
-  /**
-   * Schedules an async Win32 protection job for `window`.
-   * If a job is already in flight for this window it is silently skipped —
-   * the in-flight job already covers the request.
-   *
-   * After the first successful application a single safety-net re-apply is
-   * scheduled 3 seconds later to cover race conditions on slow machines
-   * (e.g. window shown before PowerShell had time to finish the first run).
-   */
-  private scheduleWin32Protection(window: BrowserWindow, isSafetyNet = false): void {
-    if (window.isDestroyed()) return;
-
-    const id = window.id;
-    if (this.pendingWin32.has(id)) return; // job already in-flight
-
-    this.pendingWin32.add(id);
-
-    void this.applyWin32ProtectionAsync(window)
-      .then(() => {
-        this.pendingWin32.delete(id);
-        if (!isSafetyNet) {
-          // One delayed re-apply to guarantee protection on slow systems.
-          setTimeout(() => {
-            if (!window.isDestroyed()) {
-              this.scheduleWin32Protection(window, true);
-            }
-          }, 3000);
-        }
-      })
-      .catch((err: unknown) => {
-        this.pendingWin32.delete(id);
-        console.warn('[wingman] Win32 capture protection failed:', err);
-      });
-  }
-
-  /**
-   * Calls SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE=0x11) via PowerShell.
-   *
-   * Key correctness fixes vs. the naïve approach:
-   *  1. BigInt HWND read  – avoids UInt32 truncation on 64-bit Windows 11.
-   *  2. Hex [IntPtr] literal – avoids Int32 overflow when HWND > 0x7FFFFFFF.
-   *  3. -ExecutionPolicy Bypass – prevents policy restrictions from blocking
-   *     inline Add-Type / C# compilation on hardened Win11 environments.
-   *  4. Non-blocking (spawn) – never freezes the Electron main process.
-   *  5. pwsh.exe fallback – works on machines with PowerShell 7+ only.
-   */
-  private applyWin32ProtectionAsync(window: BrowserWindow): Promise<void> {
-    if (window.isDestroyed()) return Promise.resolve();
-
-    let hwndHex: string;
-    try {
-      const buf = window.getNativeWindowHandle();
-      // getNativeWindowHandle returns an 8-byte buffer on 64-bit Windows.
-      // readBigUInt64LE avoids truncating the upper 32 bits of the pointer.
-      hwndHex = buf.readBigUInt64LE(0).toString(16);
-    } catch {
-      return Promise.resolve();
-    }
-
-    const psScript = [
-      "Add-Type -TypeDefinition @'",
-      'using System;',
-      'using System.Runtime.InteropServices;',
-      'public class WingManProtect {',
-      '  [DllImport("user32.dll", SetLastError=true)]',
-      '  public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);',
-      '}',
-      "'@",
-      // 0x11 = WDA_EXCLUDEFROMCAPTURE: completely invisible to Windows Graphics Capture.
-      // Hex literal prevents [IntPtr] cast overflow when HWND > Int32.MaxValue.
-      `[WingManProtect]::SetWindowDisplayAffinity([IntPtr]0x${hwndHex}, 0x11)`,
-    ].join('\n');
-
-    const sysRoot = process.env.SystemRoot ?? 'C:\\Windows';
-    const ps5 = `${sysRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-    const ps7 = 'pwsh.exe';
-
-    const args = [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy', 'Bypass', // Required on Win11 to allow Add-Type compilation.
-      '-WindowStyle', 'Hidden',
-      '-Command', psScript,
-    ];
-
-    // Try ps5 then ps7; resolve on first success, reject only if both fail.
-    const tryExe = (exe: string): Promise<void> =>
-      new Promise((resolve, reject) => {
-        const proc = spawn(exe, args, { windowsHide: true, stdio: 'ignore' });
-        const timer = setTimeout(() => {
-          try { proc.kill(); } catch { /* ignore */ }
-          reject(new Error(`[wingman] Timeout waiting for ${exe}`));
-        }, 10_000);
-        proc.on('close', (code) => {
-          clearTimeout(timer);
-          if (code === 0) resolve();
-          else reject(new Error(`${exe} exited with code ${String(code)}`));
-        });
-        proc.on('error', (err) => {
-          clearTimeout(timer);
-          reject(err);
-        });
-      });
-
-    return tryExe(ps5).catch(() => tryExe(ps7));
   }
 
   // ─── Linux ─────────────────────────────────────────────────────────────────
@@ -456,7 +343,16 @@ export class WindowManager {
 
   sendAppState(state: AppState) {
     for (const window of [this.dashboardWindow, this.overlayWindow]) {
-      window?.webContents.send('app:state', state);
+      if (!window || window.isDestroyed() || window.webContents.isDestroyed()) {
+        continue;
+      }
+
+      try {
+        window.webContents.send('app:state', state);
+      } catch {
+        // The render frame can be torn down between the check and the send,
+        // which is routine during shutdown and never worth reporting.
+      }
     }
   }
 

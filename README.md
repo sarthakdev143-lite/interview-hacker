@@ -132,7 +132,7 @@ Copy `.env.example` to `.env` and fill in:
 |---|---|
 | `GROQ_API_KEY` | Optional fallback Groq API key (can also be set in the UI) |
 | `DEEPGRAM_API_KEY` | Optional, only for the Deepgram transcription engine |
-| `WINGMAN_PYTHON_BIN` | Optional path to a custom Python binary |
+| `WINGMAN_PYTHON_BIN` | Dev only: path to a custom Python interpreter. Installed builds always use their bundled server. |
 
 ## 📦 Building from Source
 

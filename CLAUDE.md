@@ -81,7 +81,9 @@ Groq retires model IDs, and a saved user preference outlives them. This repo was
 
 ### Capture protection
 
-`WindowManager.hardenWindow()` is the only correct way to create a window here. Windows silently drops display affinity across lifecycle events, so protection is re-applied on `show`/`restore`/`focus`/`maximize`/`unmaximize`/fullscreen/`did-finish-load`. Layers: `setContentProtection(true)` on all platforms; on Windows a non-blocking `powershell.exe` (falling back to `pwsh.exe`) call to `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE=0x11)` with an in-flight guard set and one 3 s safety-net re-apply; on Linux an `xprop _NET_WM_BYPASS_COMPOSITOR` hint. main.ts additionally disables the `WindowsGraphicsCapture` Chromium feature at startup.
+`WindowManager.hardenWindow()` is the only correct way to create a window here. Windows can drop display affinity across lifecycle events, so protection is re-applied on `show`/`restore`/`focus`/`maximize`/`unmaximize`/fullscreen/`did-finish-load`. `setContentProtection(true)` does the work on every platform; on Linux an `xprop _NET_WM_BYPASS_COMPOSITOR` hint is added. main.ts additionally disables the `WindowsGraphicsCapture` Chromium feature at startup.
+
+**Electron already applies `WDA_EXCLUDEFROMCAPTURE` (0x11) on Windows** — the affinity that hides the window from Windows Graphics Capture (Teams, Zoom, Meet, OBS), not the weaker `WDA_MONITOR`. This was previously duplicated by shelling out to PowerShell + `Add-Type` on all eight lifecycle events; under startup contention that hit its own 10 s timeout and fell through to a `pwsh.exe` absent on stock Windows, logging failures for work Electron had already done. It was removed after reading `GetWindowDisplayAffinity` back off both live windows with the PowerShell path disabled and still getting 0x11. **Verify the same way before reintroducing anything like it** — a PowerShell script that enumerates windows by PID and calls `GetWindowDisplayAffinity` settles the question in one run.
 
 ### Adding an IPC channel
 

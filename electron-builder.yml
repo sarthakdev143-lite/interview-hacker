@@ -25,16 +25,6 @@ win:
   verifyUpdateCodeSignature: false
   executableName: WingMan
 
-mac:
-  target:
-    - dmg
-  artifactName: WingMan-${version}.${ext}
-
-linux:
-  target:
-    - AppImage
-  artifactName: WingMan-${version}.${ext}
-
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

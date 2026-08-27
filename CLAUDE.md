@@ -117,6 +117,8 @@ API keys never cross to the renderer, so anything needing one is a control-plane
 
 ## Things that will bite you
 
+- **`WINGMAN_PYTHON_BIN` is a dev-only override.** A packaged build runs the bundled sidecar and only falls back to the override when that binary is genuinely missing. It used to take precedence unconditionally, and because main.ts loads `.env` via `dotenv/config` relative to the working directory, launching a packaged build from the repo pointed the shipped app at a developer virtualenv. Test packaged behaviour with `release/win-unpacked/WingMan.exe`, not just `npm run dev`.
+- **Failures during sidecar startup used to be misreported.** The exit handler nulls `this.child`, so a check on `this.child?.exitCode` can never see an early exit; a process that died instantly surfaced as "did not report a port in time" 20 seconds later. Early exits are now tracked in a local. Keep it that way — the spawn path is the hardest part of this app to debug remotely.
 - **Do not reintroduce a hardcoded model list** as the source of truth, and do not assume a model ID mentioned in this repo still exists — check `POST /models` or `models.list()` first. See "Models are resolved at runtime" above.
 - **Only the Deepgram provider requires a second API key.** `main.ts:startSession`, `server.py:start_session`, and `useSession.canStart` each gate on `provider === 'deepgram'`; a new gate that demands the key unconditionally silently breaks the free path.
 - The Python tests drive `SessionManager` through its private methods (`_publish_transcript`, `_flush_pending_question_if_ready`, `_yield_queue`, `_on_transcript`) and a `FakeTranscriber` mirroring `start`/`stop`/`feed`. Renaming those breaks the suite even when behaviour is unchanged.

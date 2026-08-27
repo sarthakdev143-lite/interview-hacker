@@ -5,7 +5,7 @@ import {
 } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -95,11 +95,17 @@ export class PythonServerManager {
       stderrBuffer += `${error.message}\n`;
     });
 
-    this.child.on('exit', (code) => {
+    // The pid is captured here because the exit handler clears `this.child`,
+    // and the netstat lookup below still needs it.
+    const childPid = this.child.pid;
+    let earlyExit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+
+    this.child.on('exit', (code, signal) => {
       const expected = this.isExpectedShutdown;
       if (code !== 0 && code !== null) {
         console.error(`[wingman-python] exited with code ${code}`);
       }
+      earlyExit = { code, signal };
       this.child = null;
       this.port = null;
       this.isExpectedShutdown = false;
@@ -109,17 +115,28 @@ export class PythonServerManager {
     const startedAt = Date.now();
     while (!this.port) {
       if (spawnError) {
-        throw new Error(`Failed to start Python server: ${spawnError.message}`);
-      }
-
-      if (this.child?.exitCode !== null && this.child?.exitCode !== undefined) {
         throw new Error(
-          `Python server exited before reporting a port. ${stderrBuffer}`.trim(),
+          `Failed to start Python server (${command}): ${spawnError.message}`,
         );
       }
 
-      if (this.isPackaged && this.child?.pid) {
-        const discoveredPort = await this.discoverPortFromProcess();
+      // A child that has already exited leaves `this.child` null, so this must
+      // be tracked separately. Reading `this.child?.exitCode` here instead used
+      // to yield undefined and fall through to the 20s timeout below, reporting
+      // "did not report a port in time" for a process that had died instantly.
+      const exit: { code: number | null; signal: NodeJS.Signals | null } | null =
+        earlyExit;
+      if (exit) {
+        const cause = exit.signal
+          ? `was terminated by ${exit.signal}`
+          : `exited with code ${exit.code}`;
+        throw new Error(
+          `Python server ${cause} before reporting a port. Command: ${command}. ${stderrBuffer}`.trim(),
+        );
+      }
+
+      if (this.isPackaged && childPid) {
+        const discoveredPort = await this.discoverPortFromProcess(childPid);
         if (discoveredPort) {
           this.port = discoveredPort;
           console.log(
@@ -131,7 +148,7 @@ export class PythonServerManager {
 
       if (Date.now() - startedAt > 20000) {
         throw new Error(
-          `Python server did not report a port in time. ${stderrBuffer}`.trim(),
+          `Python server did not report a port in time. Command: ${command}. ${stderrBuffer}`.trim(),
         );
       }
       await delay(200);
@@ -180,8 +197,7 @@ export class PythonServerManager {
     throw new Error('Python server failed to become healthy in time.');
   }
 
-  private async discoverPortFromProcess() {
-    const pid = this.child?.pid;
+  private async discoverPortFromProcess(pid: number) {
     if (!pid) {
       return null;
     }
@@ -235,45 +251,53 @@ export class PythonServerManager {
     return null;
   }
 
+  /** The frozen sidecar shipped alongside a packaged build, if there is one. */
+  private getBundledBinary() {
+    if (!this.isPackaged) {
+      return null;
+    }
+
+    return path.join(
+      process.resourcesPath,
+      'python',
+      'wingman-server',
+      process.platform === 'win32' ? 'wingman-server.exe' : 'wingman-server',
+    );
+  }
+
   private getSpawnTarget() {
-    if (process.env.WINGMAN_PYTHON_BIN) {
-      return {
-        command: process.env.WINGMAN_PYTHON_BIN,
-        args: [path.join(process.cwd(), 'python', 'server.py')],
-      };
+    const serverScript = path.join(process.cwd(), 'python', 'server.py');
+    const override = process.env.WINGMAN_PYTHON_BIN?.trim();
+
+    // A packaged install ships its own sidecar and must run it. Honouring the
+    // override first meant a stray .env in the working directory could point a
+    // shipped app at a developer virtualenv that will not exist on the user's
+    // machine — which is exactly how this failed when the packaged build was
+    // launched from the repo. The override survives only as a rescue hatch for
+    // when the bundled binary is missing.
+    const bundled = this.getBundledBinary();
+    if (bundled) {
+      if (existsSync(bundled)) {
+        return { command: bundled, args: [] };
+      }
+
+      console.warn(
+        `[wingman-python] bundled sidecar missing at ${bundled}; falling back to WINGMAN_PYTHON_BIN`,
+      );
+    }
+
+    if (override) {
+      return { command: override, args: ['-u', serverScript] };
     }
 
     if (process.platform === 'win32') {
-      if (this.isPackaged) {
-        const binary = path.join(
-          process.resourcesPath,
-          'python',
-          'wingman-server',
-          'wingman-server.exe',
-        );
-        return { command: binary, args: [] };
-      }
-
       return {
         command: path.join(process.cwd(), '.venv', 'Scripts', 'python.exe'),
-        args: ['-u', path.join(process.cwd(), 'python', 'server.py')],
+        args: ['-u', serverScript],
       };
     }
 
-    if (this.isPackaged) {
-      const binary = path.join(
-        process.resourcesPath,
-        'python',
-        'wingman-server',
-        'wingman-server',
-      );
-      return { command: binary, args: [] };
-    }
-
-    return {
-      command: 'python3',
-      args: ['-u', path.join(process.cwd(), 'python', 'server.py')],
-    };
+    return { command: 'python3', args: ['-u', serverScript] };
   }
 
   async request<T>(route: string, init?: RequestInit): Promise<T> {

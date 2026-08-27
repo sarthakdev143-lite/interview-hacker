@@ -75,6 +75,24 @@ Groq retires model IDs, and a saved user preference outlives them. This repo was
 
 **gpt-oss and qwen3 are reasoning models**: they spend part of the completion budget on hidden `delta.reasoning` and return *empty content* when the budget is too small. The old classifier capped `max_completion_tokens` at 8, which silently answered "not a question" every time. Hence `reasoning_effort: 'low'`, `CLASSIFIER_MAX_TOKENS = 96`, and `ANSWER_MAX_TOKENS = 900`. `_create()` retries without `reasoning_effort` for models that reject the parameter.
 
+### Latency budget
+
+End-of-question to first answer token is the number that decides whether the app
+is usable live. Measured on the default Groq path by feeding recorded speech
+through the real pipeline at wall-clock speed:
+
+| stage | ~cost |
+|---|---|
+| VAD hangover before the utterance closes | 700 ms (overlaps the speaker's natural pause) |
+| Groq Whisper round trip | 450–650 ms |
+| question detection + enqueue | ~130 ms |
+| Groq time-to-first-token (`gpt-oss-120b`, `reasoning_effort: low`) | 420–500 ms |
+| **total** | **~800 ms** |
+
+It was ~1230 ms until `QUESTION_SETTLE_SECONDS` was made provider-aware. Before
+tuning any of these, re-measure — the stages interact, and the hangover is
+partly hidden by the speaker's own trailing silence.
+
 ### Cost accounting
 
 [python/usage.py](python/usage.py) tracks session spend: transcription seconds (exact, from the VAD) and LLM tokens (real counts from `chunk.x_groq.usage` on the final streamed chunk). Snapshots reach the UI as `usage` events on the transcript SSE stream and via `GET /usage`. Deepgram bills connection time, so its total is wall clock (`set_stream_seconds`) rather than the speech the VAD measured — that asymmetry is the whole point of the comparison the UI shows.

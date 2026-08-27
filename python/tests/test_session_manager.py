@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import sys
+import time
 import tempfile
 import threading
 import unittest
@@ -13,6 +14,7 @@ PYTHON_DIR = Path(__file__).resolve().parents[1]
 if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
+import session_manager
 from session_manager import SessionManager
 
 
@@ -230,6 +232,54 @@ class SessionManagerTests(unittest.TestCase):
         self.manager._process_audio_chunk(quiet_chunk)
 
         self.assertGreater(len(self.manager.transcriber.feed_chunks), 0)
+
+
+class SettleWindowTests(unittest.TestCase):
+    """The settle window is pure latency for providers that never fragment."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.manager = SessionManager(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_default_is_the_conservative_window(self):
+        self.assertEqual(
+            self.manager.question_settle_seconds,
+            session_manager.QUESTION_SETTLE_SECONDS,
+        )
+
+    def test_a_complete_utterance_provider_barely_waits(self):
+        self.manager.transcription_provider = "groq"
+        self.manager.question_settle_seconds = session_manager.UTTERANCE_SETTLE_SECONDS
+        self.manager.llm = FakeLLM()
+
+        self.manager._publish_transcript("What is React")
+        time.sleep(session_manager.UTTERANCE_SETTLE_SECONDS + 0.02)
+        self.manager._flush_pending_question_if_ready()
+
+        question, _ = self.manager.answer_queue.get_nowait()
+        self.assertEqual(question, "What is React")
+
+    def test_a_fragmenting_provider_still_holds_the_question(self):
+        self.manager.transcription_provider = "deepgram"
+        self.manager.question_settle_seconds = session_manager.QUESTION_SETTLE_SECONDS
+        self.manager.llm = FakeLLM()
+
+        self.manager._publish_transcript("What is React")
+        # Well inside the window, so the question must not be released yet.
+        self.manager._flush_pending_question_if_ready()
+
+        with self.assertRaises(queue.Empty):
+            self.manager.answer_queue.get_nowait()
+
+    def test_the_fast_window_is_meaningfully_faster(self):
+        self.assertLess(
+            session_manager.UTTERANCE_SETTLE_SECONDS,
+            session_manager.QUESTION_SETTLE_SECONDS / 4,
+        )
+
 
 
 if __name__ == "__main__":

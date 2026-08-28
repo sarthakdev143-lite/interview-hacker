@@ -29,6 +29,11 @@ import {
 } from './types/contracts';
 import { WindowManager } from './windowManager';
 
+// Must run before requestSingleInstanceLock()/getPath('userData') below —
+// both resolve against app.name, which otherwise defaults to package.json's
+// "wingman" instead of the "WingMan" folder every other build/session uses.
+app.setName('WingMan');
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!gotSingleInstanceLock) {
@@ -604,7 +609,6 @@ function installIpcHandlers() {
 }
 
 async function createApp() {
-  app.setName('WingMan');
   installIpcHandlers();
   registerShortcuts();
 

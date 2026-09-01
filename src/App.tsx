@@ -227,6 +227,8 @@ function DashboardApp() {
                 <HistoryPanel
                   history={session.history}
                   loading={session.historyLoading}
+                  onClearAll={session.clearAllHistory}
+                  onDeleteSession={session.deleteHistorySession}
                   onOpenFolder={session.openHistoryFolder}
                 />
               }

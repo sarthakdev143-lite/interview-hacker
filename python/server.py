@@ -298,7 +298,42 @@ def answer_manual():
 
 @app.get("/history")
 def get_history():
-    return jsonify({"sessions": sessions.list_history()})
+    try:
+        limit = int(request.args.get("limit", 50))
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "limit and offset must be integers"}), 400
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    page = sessions.list_history(limit=limit, offset=offset)
+    return jsonify(
+        {
+            "sessions": page["sessions"],
+            "total": page["total"],
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+@app.delete("/history")
+def clear_history():
+    """Delete every stored transcript.
+
+    An interview assistant that keeps a plaintext record of what was said needs
+    a way to destroy it, and burying that behind "find the folder yourself" is
+    not one.
+    """
+    removed = sessions.clear_history()
+    return jsonify({"deleted": removed})
+
+
+@app.delete("/history/<session_id>")
+def delete_history_entry(session_id: str):
+    if not sessions.delete_history(session_id):
+        return jsonify({"error": "No such session."}), 404
+    return jsonify({"deleted": 1})
 
 
 @app.get("/usage")

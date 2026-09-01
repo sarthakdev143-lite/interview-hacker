@@ -515,5 +515,60 @@ class RuntimeFencingTests(unittest.TestCase):
             self.manager._register_subscriber(self.manager.transcript_subscribers)
 
 
+class HistoryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.manager = SessionManager(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write(self, session_id: str):
+        self.manager._save_history(
+            {
+                "session_id": session_id,
+                "started_at": time.time(),
+                "exchanges": [{"question": "q", "answer": "a", "timestamp": "t"}],
+            }
+        )
+
+    def test_history_is_paginated(self):
+        for index in range(5):
+            self._write(f"session-{index}")
+
+        page = self.manager.list_history(limit=2, offset=0)
+
+        self.assertEqual(page["total"], 5)
+        self.assertEqual(len(page["sessions"]), 2)
+
+    def test_a_single_session_can_be_deleted(self):
+        self._write("keep-me")
+        self._write("delete-me")
+
+        self.assertTrue(self.manager.delete_history("delete-me"))
+
+        remaining = {s["session_id"] for s in self.manager.list_history()["sessions"]}
+        self.assertEqual(remaining, {"keep-me"})
+
+    def test_deleting_an_unknown_session_reports_failure(self):
+        self.assertFalse(self.manager.delete_history("never-existed"))
+
+    def test_a_traversal_sequence_cannot_escape_the_history_directory(self):
+        outside = Path(self.temp_dir.name).parent / "wingman-traversal-probe.json"
+        outside.write_text("{}", encoding="utf-8")
+        try:
+            self.assertFalse(self.manager.delete_history("../wingman-traversal-probe"))
+            self.assertTrue(outside.exists())
+        finally:
+            outside.unlink(missing_ok=True)
+
+    def test_history_can_be_cleared(self):
+        for index in range(3):
+            self._write(f"session-{index}")
+
+        self.assertEqual(self.manager.clear_history(), 3)
+        self.assertEqual(self.manager.list_history()["total"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

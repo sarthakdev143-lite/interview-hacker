@@ -209,6 +209,7 @@ USAGE_BROADCAST_INTERVAL_SECONDS = 3.0
 MAX_CONCURRENT_CLASSIFIERS = 3
 MAX_PENDING_ANSWERS = 8
 MAX_SSE_SUBSCRIBERS = 16
+MAX_HISTORY_SESSIONS = 200
 
 
 class SessionManager:
@@ -525,14 +526,71 @@ class SessionManager:
     def current_usage(self) -> dict:
         return self._usage_snapshot()
 
-    def list_history(self) -> list:
+    def _history_files(self) -> list[Path]:
+        try:
+            return sorted(self.history_dir.glob("*.json"), reverse=True)
+        except OSError as error:
+            log.error("History directory unreadable: %s", error)
+            return []
+
+    def list_history(self, limit: int = 50, offset: int = 0) -> dict:
+        """One page of stored sessions.
+
+        Previously every file was read and serialised into a single response on
+        every call, which grows without bound over a user's lifetime.
+        """
+        files = self._history_files()
+        total = len(files)
         sessions = []
-        for file_path in sorted(self.history_dir.glob("*.json"), reverse=True):
+        for file_path in files[offset : offset + limit]:
             try:
                 sessions.append(json.loads(file_path.read_text(encoding="utf-8")))
-            except Exception:
+            except (OSError, ValueError) as error:
+                # Skipping silently meant a user lost a session with no way to
+                # know why it vanished from the list.
+                log.warning("Skipping unreadable history file %s: %s", file_path.name, error)
                 continue
-        return sessions
+        return {"sessions": sessions, "total": total}
+
+    def delete_history(self, session_id: str) -> bool:
+        """Delete one stored session by ID.
+
+        The ID is matched against parsed filenames rather than interpolated into
+        a path, so a traversal sequence cannot escape the history directory.
+        """
+        wanted = str(session_id).strip()
+        if not wanted:
+            return False
+
+        for file_path in self._history_files():
+            if file_path.stem.split("_", 1)[-1] != wanted:
+                continue
+            try:
+                file_path.unlink()
+                return True
+            except OSError as error:
+                log.error("Could not delete %s: %s", file_path.name, error)
+                return False
+        return False
+
+    def clear_history(self) -> int:
+        removed = 0
+        for file_path in self._history_files():
+            try:
+                file_path.unlink()
+                removed += 1
+            except OSError as error:
+                log.error("Could not delete %s: %s", file_path.name, error)
+        return removed
+
+    def _prune_history(self):
+        """Keep the newest MAX_HISTORY_SESSIONS records."""
+        files = self._history_files()
+        for file_path in files[MAX_HISTORY_SESSIONS:]:
+            try:
+                file_path.unlink()
+            except OSError as error:
+                log.debug("Could not prune %s: %s", file_path.name, error)
 
     # ------------------------------------------------------------------
     # Queue / generator helpers
@@ -1116,3 +1174,5 @@ class SessionManager:
                 {"type": "notice", "message": "This session could not be saved to history."}
             )
             return
+
+        self._prune_history()

@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getServerBaseUrl, loadHistory, uploadResume } from '../lib/backend';
+import {
+  clearHistory,
+  deleteHistoryEntry,
+  getServerBaseUrl,
+  loadHistory,
+  uploadResume,
+} from '../lib/backend';
 import {
   DEFAULT_ANSWER_MODEL,
   type AppState,
@@ -122,37 +128,77 @@ export function useSession() {
 
     let isActive = true;
 
-    async function refreshHistory() {
-      setHistoryLoading(true);
-      try {
-        const response = await loadHistory(
-          appState.serverPort as number,
-          appState.serverToken,
-        );
-        if (isActive) {
-          setHistory(response.sessions);
-        }
-      } catch (error) {
-        if (isActive) {
-          setActionError(
-            error instanceof Error
-              ? error.message
-              : 'Failed to load saved session history.',
-          );
-        }
-      } finally {
-        if (isActive) {
-          setHistoryLoading(false);
-        }
-      }
-    }
-
-    void refreshHistory();
+    void refreshHistory(() => isActive);
 
     return () => {
       isActive = false;
     };
   }, [appState.serverPort, appState.serverToken, appState.currentSessionId]);
+
+  async function refreshHistory(isActive: () => boolean = () => true) {
+    const port = appState.serverPort;
+    if (!port) {
+      return;
+    }
+
+    setHistoryLoading(true);
+    try {
+      const response = await loadHistory(port, appState.serverToken);
+      if (isActive()) {
+        setHistory(response.sessions);
+      }
+    } catch (error) {
+      if (isActive()) {
+        setActionError(
+          error instanceof Error
+            ? error.message
+            : 'Failed to load saved session history.',
+        );
+      }
+    } finally {
+      if (isActive()) {
+        setHistoryLoading(false);
+      }
+    }
+  }
+
+  /**
+   * An interview assistant that keeps a plaintext record of what was said needs
+   * a way to destroy it that is not "find the folder yourself".
+   */
+  async function deleteHistorySession(sessionId: string) {
+    const port = appState.serverPort;
+    if (!port) {
+      return;
+    }
+
+    setActionError(null);
+    try {
+      await deleteHistoryEntry(port, appState.serverToken, sessionId);
+      await refreshHistory();
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Failed to delete that session.',
+      );
+    }
+  }
+
+  async function clearAllHistory() {
+    const port = appState.serverPort;
+    if (!port) {
+      return;
+    }
+
+    setActionError(null);
+    try {
+      await clearHistory(port, appState.serverToken);
+      await refreshHistory();
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Failed to clear history.',
+      );
+    }
+  }
 
   // The account's real model list. Groq retires IDs, so a stale saved model
   // must not be the only thing on offer.
@@ -429,6 +475,8 @@ export function useSession() {
     toggleOverlay,
     minimizeOverlay,
     openHistoryFolder,
+    deleteHistorySession,
+    clearAllHistory,
     openExternal,
   };
 }

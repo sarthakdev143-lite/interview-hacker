@@ -2,18 +2,30 @@ import { useState } from 'react';
 import { formatDate, formatDuration } from '../lib/format';
 import type { SessionHistoryRecord } from '../types/contracts';
 
+/** Sentinel for the "delete everything" button's busy state. */
+const ALL = '__all__';
+
 interface HistoryPanelProps {
   history: SessionHistoryRecord[];
   loading: boolean;
   onOpenFolder: () => Promise<void>;
+  onDeleteSession: (sessionId: string) => Promise<void>;
+  onClearAll: () => Promise<void>;
 }
 
 export function HistoryPanel({
   history,
   loading,
   onOpenFolder,
+  onDeleteSession,
+  onClearAll,
 }: HistoryPanelProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Deleting a transcript is irreversible, so it takes a second click rather
+  // than a modal that would be dismissed on reflex.
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [confirmingClearAll, setConfirmingClearAll] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -56,19 +68,49 @@ export function HistoryPanel({
             Expand a run to inspect the preserved questions and generated answers.
           </p>
         </div>
-        <button
-          className="rounded-full border border-white/15 px-4 py-2 text-sm text-slate-200 transition hover:border-white/30 hover:bg-white/5"
-          onClick={() => {
-            void onOpenFolder();
-          }}
-          type="button"
-        >
-          Open folder
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            className="rounded-full border border-white/15 px-4 py-2 text-sm text-slate-200 transition hover:border-white/30 hover:bg-white/5"
+            onClick={() => {
+              void onOpenFolder();
+            }}
+            type="button"
+          >
+            Open folder
+          </button>
+          <button
+            className={`rounded-full border px-4 py-2 text-sm transition ${
+              confirmingClearAll
+                ? 'border-rose-400/60 bg-rose-500/15 text-rose-100'
+                : 'border-white/15 text-slate-300 hover:border-rose-400/40 hover:text-rose-200'
+            }`}
+            disabled={busyId === ALL}
+            onClick={() => {
+              if (!confirmingClearAll) {
+                setConfirmingClearAll(true);
+                return;
+              }
+              setBusyId(ALL);
+              void onClearAll().finally(() => {
+                setBusyId(null);
+                setConfirmingClearAll(false);
+              });
+            }}
+            onBlur={() => setConfirmingClearAll(false)}
+            type="button"
+          >
+            {busyId === ALL
+              ? 'Deleting...'
+              : confirmingClearAll
+                ? 'Delete everything?'
+                : 'Delete all'}
+          </button>
+        </div>
       </div>
 
       {history.map((session) => {
         const expanded = expandedId === session.session_id;
+        const confirming = confirmingId === session.session_id;
         return (
           <article
             className="panel-surface rounded-[1.75rem] p-5"
@@ -97,6 +139,36 @@ export function HistoryPanel({
                 </p>
               </div>
             </button>
+
+            <div className="mt-3 flex justify-end">
+              <button
+                className={`rounded-full border px-3 py-1 text-xs transition ${
+                  confirming
+                    ? 'border-rose-400/60 bg-rose-500/15 text-rose-100'
+                    : 'border-white/10 text-slate-400 hover:border-rose-400/40 hover:text-rose-200'
+                }`}
+                disabled={busyId === session.session_id}
+                onBlur={() => setConfirmingId(null)}
+                onClick={() => {
+                  if (!confirming) {
+                    setConfirmingId(session.session_id);
+                    return;
+                  }
+                  setBusyId(session.session_id);
+                  void onDeleteSession(session.session_id).finally(() => {
+                    setBusyId(null);
+                    setConfirmingId(null);
+                  });
+                }}
+                type="button"
+              >
+                {busyId === session.session_id
+                  ? 'Deleting...'
+                  : confirming
+                    ? 'Confirm delete'
+                    : 'Delete'}
+              </button>
+            </div>
 
             {expanded && (
               <div className="mt-5 space-y-4 border-t border-white/10 pt-5">

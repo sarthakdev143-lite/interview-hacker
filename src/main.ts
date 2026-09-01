@@ -443,7 +443,60 @@ async function listModels() {
   return modelCatalogInFlight;
 }
 
-async function startSession(config: StartSessionRequest) {
+// Generous for real input, finite for anything else. Mirrors the caps the
+// sidecar applies, so an oversized field is rejected before it is sent.
+const MAX_RESUME_CHARS = 60_000;
+const MAX_CONTEXT_CHARS = 20_000;
+
+function requireString(value: unknown, label: string, maxLength: number) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be text.`);
+  }
+  if (value.length > maxLength) {
+    throw new Error(`${label} is too long (limit ${maxLength} characters).`);
+  }
+  return value;
+}
+
+/**
+ * `session:start` persists settings and drives window geometry, but it used to
+ * do so without any of the validation `app:save-settings` applies — an
+ * inconsistent trust boundary for two paths that write the same file.
+ */
+function normalizeStartSessionRequest(config: StartSessionRequest): StartSessionRequest {
+  if (!config || typeof config !== 'object') {
+    throw new Error('Invalid session configuration.');
+  }
+
+  const settings = normalizeSettingsUpdates({
+    language: config.language,
+    model: config.model,
+    overlayPreset: config.overlayPreset,
+    overlayOpacity: config.overlayOpacity,
+    historyEnabled: config.historyEnabled,
+    transcriptionProvider: config.transcriptionProvider,
+  });
+
+  return {
+    ...config,
+    resumeText: requireString(config.resumeText, 'Resume text', MAX_RESUME_CHARS),
+    extraContext: requireString(config.extraContext, 'Extra context', MAX_CONTEXT_CHARS),
+    apiKey: requireString(config.apiKey, 'Groq API key', 512),
+    deepgramApiKey: requireString(config.deepgramApiKey, 'Deepgram API key', 512),
+    language: settings.language ?? 'en',
+    model: settings.model ?? DEFAULT_ANSWER_MODEL,
+    overlayPreset: settings.overlayPreset ?? 'bottom-right',
+    overlayOpacity: settings.overlayOpacity ?? 0.95,
+    historyEnabled: settings.historyEnabled ?? false,
+    transcriptionProvider: settings.transcriptionProvider ?? 'groq',
+  };
+}
+
+async function startSession(rawConfig: StartSessionRequest) {
+  const config = normalizeStartSessionRequest(rawConfig);
   await ensureServerReady('idle');
   const apiKey =
     config.apiKey?.trim() ||
@@ -453,11 +506,7 @@ async function startSession(config: StartSessionRequest) {
     throw new Error('A Groq API key is required before starting a session.');
   }
 
-  const provider: TranscriptionProvider = TRANSCRIPTION_PROVIDERS.includes(
-    config.transcriptionProvider,
-  )
-    ? config.transcriptionProvider
-    : 'groq';
+  const provider = config.transcriptionProvider;
 
   const deepgramApiKey =
     config.deepgramApiKey?.trim() ||

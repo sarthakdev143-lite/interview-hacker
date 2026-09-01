@@ -7,6 +7,42 @@ import type { AppState, OverlayBounds, OverlayPreset } from './types/contracts';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { execFile } = require('node:child_process') as typeof import('node:child_process');
 
+/**
+ * Navigation and window-open lockdown for any `webContents` in the app.
+ *
+ * Exported so it can be installed from `app.on('web-contents-created')` as
+ * well, which catches windows that do not go through `WindowManager` — the
+ * startup error window, and anything added later. Covers `will-redirect` and
+ * `will-frame-navigate` alongside `will-navigate`: the first alone leaves a
+ * server-side redirect and a subframe navigation unchecked.
+ */
+export function hardenWebContents(
+  contents: Electron.WebContents,
+  isAllowed: (url: string) => boolean,
+) {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  const block = (event: { preventDefault: () => void }, url: string) => {
+    if (!isAllowed(url)) {
+      event.preventDefault();
+    }
+  };
+
+  contents.on('will-navigate', block);
+  contents.on('will-redirect', block);
+  contents.on('will-frame-navigate', (event) => {
+    block(event, event.url);
+  });
+
+  // Chromium fetches dictionaries from Google on first use. An app that renders
+  // live interview transcripts should not be making that request.
+  contents.session.setSpellCheckerEnabled(false);
+
+  contents.on('did-attach-webview', (_event, webContents) => {
+    hardenWebContents(webContents, isAllowed);
+  });
+}
+
 export class WindowManager {
   dashboardWindow: BrowserWindow | null = null;
 
@@ -40,12 +76,7 @@ export class WindowManager {
    * lifecycle event that could reset or bypass the protection.
    */
   private hardenWindow(window: BrowserWindow) {
-    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    window.webContents.on('will-navigate', (event, url) => {
-      if (!this.isAppUrl(url)) {
-        event.preventDefault();
-      }
-    });
+    hardenWebContents(window.webContents, (url) => this.isAppUrl(url));
 
     // Apply now and on every event that can strip the affinity.
     const protect = () => this.applyCaptureProtection(window);
@@ -157,6 +188,10 @@ export class WindowManager {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        // Explicit rather than relying on the Electron >= 20 default: this is a
+        // security-critical property and the preload only uses contextBridge.
+        sandbox: true,
+        webSecurity: true,
         preload: this.preloadPath,
       },
     });
@@ -179,6 +214,8 @@ export class WindowManager {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
+        webSecurity: true,
         preload: this.preloadPath,
         backgroundThrottling: false,
       },

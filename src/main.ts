@@ -6,6 +6,7 @@ import {
   globalShortcut,
   ipcMain,
   type IpcMainInvokeEvent,
+  session,
   shell,
 } from 'electron';
 import 'dotenv/config';
@@ -28,7 +29,7 @@ import {
   type StartSessionRequest,
   type TranscriptionProvider,
 } from './types/contracts';
-import { WindowManager } from './windowManager';
+import { hardenWebContents, WindowManager } from './windowManager';
 
 // Must run before requestSingleInstanceLock()/getPath('userData') below —
 // both resolve against app.name, which otherwise defaults to package.json's
@@ -67,6 +68,78 @@ let serverRestartTimeout: NodeJS.Timeout | null = null;
 if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-features', 'WindowsGraphicsCapture');
   app.commandLine.appendSwitch('enable-features', 'DirectCompositionVideoOverlays');
+}
+
+// Pins the renderer sandbox rather than depending on the Electron default.
+app.enableSandbox();
+
+/**
+ * Content-Security-Policy for the renderer.
+ *
+ * The renderer holds the sidecar token and the full preload bridge, so an
+ * injected script — from a dependency, or from markdown rendered into an
+ * answer — would have everything it needs. There was no CSP at all before this.
+ *
+ * `connect-src` is the interesting one: the data plane talks directly to the
+ * Flask sidecar on an *ephemeral* loopback port, so the port cannot be pinned,
+ * but the host can. `style-src` needs 'unsafe-inline' because Tailwind's
+ * runtime injects style tags; scripts do not, so `script-src` stays strict.
+ */
+function contentSecurityPolicy() {
+  const devOrigin = getDevServerOrigin();
+  const scriptSrc = devOrigin
+    ? // Vite's HMR client is eval-based; this branch is unreachable in a
+      // packaged build because getDevServerOrigin() returns null there.
+      `'self' 'unsafe-inline' 'unsafe-eval' ${devOrigin}`
+    : `'self'`;
+  const connectSrc = [
+    `'self'`,
+    'http://127.0.0.1:*',
+    'ws://127.0.0.1:*',
+    devOrigin ?? '',
+    devOrigin ? devOrigin.replace(/^http/, 'ws') : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return [
+    `default-src 'none'`,
+    `script-src ${scriptSrc}`,
+    `style-src 'self' 'unsafe-inline'`,
+    `img-src 'self' data: blob:`,
+    `font-src 'self' data:`,
+    `connect-src ${connectSrc}`,
+    `media-src 'none'`,
+    `object-src 'none'`,
+    `frame-src 'none'`,
+    `worker-src 'self' blob:`,
+    `base-uri 'none'`,
+    `form-action 'none'`,
+    `frame-ancestors 'none'`,
+  ].join('; ');
+}
+
+function installSessionSecurity() {
+  const defaultSession = session.defaultSession;
+
+  defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [contentSecurityPolicy()],
+        'X-Content-Type-Options': ['nosniff'],
+      },
+    });
+  });
+
+  // Electron grants camera, microphone, geolocation and notifications by
+  // default when no handler is set. Audio capture happens in the Python
+  // sidecar, so the renderer legitimately needs none of them.
+  defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => {
+    callback(false);
+  });
+  defaultSession.setPermissionCheckHandler(() => false);
+  defaultSession.setDevicePermissionHandler(() => false);
 }
 
 let appState: AppState = {
@@ -612,6 +685,7 @@ function installIpcHandlers() {
 }
 
 async function createApp() {
+  installSessionSecurity();
   installIpcHandlers();
   registerShortcuts();
 
@@ -645,6 +719,13 @@ async function shutdownAndQuit(exitCode = 0) {
   }
 }
 
+// Catches every webContents, including ones created outside WindowManager (the
+// startup error window, and anything added later), so navigation lockdown can
+// never be forgotten at a new call site.
+app.on('web-contents-created', (_event, contents) => {
+  hardenWebContents(contents, isTrustedRendererUrl);
+});
+
 app.whenReady().then(async () => {
   try {
     await createApp();
@@ -673,7 +754,11 @@ app.whenReady().then(async () => {
       resizable: false,
       title: 'WingMan - Error',
       backgroundColor: '#05070c',
-      webPreferences: { nodeIntegration: false },
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
     });
 
     const escapedMessage = message

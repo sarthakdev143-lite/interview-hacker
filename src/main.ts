@@ -254,10 +254,28 @@ function normalizeSettingsUpdates(
   return normalized;
 }
 
+// Without a cap, a permanently broken sidecar wrote a stack trace on every
+// 1.2s retry — roughly 50 per minute, forever.
+const MAX_LOG_BYTES = 2 * 1024 * 1024;
+
+async function rotateLogIfNeeded() {
+  try {
+    const stats = await fs.stat(logPath);
+    if (stats.size < MAX_LOG_BYTES) {
+      return;
+    }
+    await fs.rename(logPath, `${logPath}.1`);
+  } catch {
+    // Missing file is the normal case on first write; a failed rename should
+    // never stop the app from logging.
+  }
+}
+
 async function logAppError(scope: string, error: unknown) {
   const message = `[${new Date().toISOString()}] ${scope}\n${formatError(error)}\n\n`;
   try {
     await fs.mkdir(userDataPath, { recursive: true });
+    await rotateLogIfNeeded();
     await fs.appendFile(logPath, message, 'utf8');
   } catch (logError) {
     console.error('Failed to write WingMan log file.', logError);
@@ -310,6 +328,17 @@ async function bootstrapServer() {
   await ensureServerReady('ready');
 }
 
+// Retrying every 1.2s forever re-spawned a process and wrote a stack trace ~50
+// times a minute against a failure that is not going to resolve on its own
+// (a quarantined binary, a missing interpreter). Back off, and stop logging
+// every attempt once it is clear the failure is persistent.
+const RESTART_BACKOFF_MS = [1_200, 2_000, 5_000, 15_000, 30_000, 60_000];
+let serverRestartAttempts = 0;
+
+function resetServerRestartBackoff() {
+  serverRestartAttempts = 0;
+}
+
 function scheduleServerRestart(message: string) {
   updateState({
     serverReady: false,
@@ -325,15 +354,25 @@ function scheduleServerRestart(message: string) {
     return;
   }
 
+  const delay =
+    RESTART_BACKOFF_MS[Math.min(serverRestartAttempts, RESTART_BACKOFF_MS.length - 1)];
+  serverRestartAttempts += 1;
+
   serverRestartTimeout = setTimeout(() => {
     serverRestartTimeout = null;
-    void ensureServerReady('idle').catch(async (error) => {
-      await logAppError('python-restart', error);
-      scheduleServerRestart(
-        'The local backend is still unavailable. WingMan will keep retrying.',
-      );
-    });
-  }, 1200);
+    void ensureServerReady('idle')
+      .then(resetServerRestartBackoff)
+      .catch(async (error) => {
+        // Only the first few failures are worth a stack trace; after that the
+        // cause is established and the log is just growing.
+        if (serverRestartAttempts <= RESTART_BACKOFF_MS.length) {
+          await logAppError('python-restart', error);
+        }
+        scheduleServerRestart(
+          'The local backend is still unavailable. WingMan will keep retrying.',
+        );
+      });
+  }, delay);
 }
 
 function registerShortcut(
@@ -365,8 +404,9 @@ function registerShortcut(
 
 function toggleOverlayVisibility() {
   windowManager.toggleOverlayVisibility();
-  updateState({
-  });
+  // Empty patch on purpose: updateState() re-reads live window metadata via
+  // WindowManager.getStateMeta() and rebroadcasts it.
+  updateState({});
 }
 
 function registerShortcuts() {
@@ -738,16 +778,34 @@ async function createApp() {
   installIpcHandlers();
   registerShortcuts();
 
-  await bootstrapServer();
-
+  // Windows first, sidecar second.
+  //
+  // This used to await bootstrapServer() before creating any window, so a
+  // sidecar that failed to start on the *first* launch — the Defender
+  // quarantine case the error dialog itself warns about — skipped window
+  // creation entirely and quit permanently, even though the app retries
+  // forever for the identical failure mid-session. Now the UI comes up, shows
+  // the error, and scheduleServerRestart() drives the same retry loop.
   const settings = await secureStore.getSettings();
   await windowManager.createWindows(
     settings.overlayPreset as OverlayPreset,
     settings.overlayOpacity,
   );
-  updateState({
-    sessionStatus: 'idle',
-  });
+
+  try {
+    await bootstrapServer();
+    updateState({ sessionStatus: 'idle' });
+  } catch (error) {
+    await logAppError('startup-server', error);
+    scheduleServerRestart(
+      `${describeStartupFailure(error)} WingMan will keep retrying.`,
+    );
+  }
+}
+
+function describeStartupFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `The local backend could not start: ${message}`;
 }
 
 async function shutdownAndQuit(exitCode = 0) {
@@ -760,10 +818,15 @@ async function shutdownAndQuit(exitCode = 0) {
     clearTimeout(serverRestartTimeout);
     serverRestartTimeout = null;
   }
+
+  // Before the shutdown await, not after: pythonServer.shutdown() can block for
+  // seconds, and leaving the global accelerators live that whole time means a
+  // stray hotkey drives a half-torn-down app.
+  globalShortcut.unregisterAll();
+
   try {
     await pythonServer.shutdown();
   } finally {
-    globalShortcut.unregisterAll();
     app.exit(exitCode);
   }
 }
@@ -830,9 +893,22 @@ app.whenReady().then(async () => {
   }
 });
 
+// Electron's default for an uncaught exception is a dialog and exit. Replacing
+// it with a silent log meant the app kept running in an undefined state with no
+// signal to the user at all. Surface it, and let them decide.
 process.on('uncaughtException', (error) => {
   console.error(error);
   void logAppError('uncaughtException', error);
+
+  if (isShuttingDown) {
+    return;
+  }
+
+  updateState({
+    error: `WingMan hit an unexpected error: ${
+      error instanceof Error ? error.message : String(error)
+    }. Details are in ${logPath}.`,
+  });
 });
 
 process.on('unhandledRejection', (reason) => {
@@ -840,14 +916,27 @@ process.on('unhandledRejection', (reason) => {
   void logAppError('unhandledRejection', reason);
 });
 
+// createWindows() overwrites dashboardWindow/overlayWindow unconditionally, so
+// two rapid activations would leak the first pair.
+let activateInFlight = false;
+
 app.on('activate', async () => {
-  if (!windowManager.dashboardWindow && appState.serverReady) {
+  if (activateInFlight || windowManager.dashboardWindow || !appState.serverReady) {
+    return;
+  }
+
+  activateInFlight = true;
+  try {
     const settings = await secureStore.getSettings();
     await windowManager.createWindows(
       settings.overlayPreset as OverlayPreset,
       settings.overlayOpacity,
     );
     updateState({});
+  } catch (error) {
+    await logAppError('activate', error);
+  } finally {
+    activateInFlight = false;
   }
 });
 

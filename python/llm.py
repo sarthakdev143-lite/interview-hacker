@@ -8,6 +8,10 @@ from typing import Callable
 
 from groq import Groq
 
+from wingman_logging import get_logger, redact
+
+log = get_logger("llm")
+
 SYSTEM_PROMPT = """
 You are WingMan, a real-time interview assistant. Your job is to help the candidate answer interview questions clearly, confidently, and concisely.
 
@@ -320,7 +324,7 @@ class LLMClient:
                         if is_rate_limit(error)
                         else f"{candidate} request failed ({type(error).__name__})"
                     )
-                    print(f"[wingman] {reason}; retrying in {wait:.1f}s")
+                    log.warning("%s; retrying in %.1fs", reason, wait)
                     self._notify_retry(reason, wait)
                     time.sleep(wait)
 
@@ -329,7 +333,7 @@ class LLMClient:
             if is_last_model or last_error is None or not is_rate_limit(last_error):
                 break
 
-            print(f"[wingman] Falling back from {candidate} to {models[index + 1]}")
+            log.warning("Falling back from %s to %s", candidate, models[index + 1])
             self._notify_retry(
                 f"{candidate} is still rate limited; trying {models[index + 1]}", 0.0
             )

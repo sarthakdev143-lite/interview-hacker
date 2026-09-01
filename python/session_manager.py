@@ -16,6 +16,9 @@ from audio_capture import AudioCapture
 from llm import LLMClient, is_rate_limit
 from transcriber import DEFAULT_STT_MODEL, create_transcriber
 from usage import UsageTracker
+from wingman_logging import get_logger, redact
+
+log = get_logger("session")
 
 # ---------------------------------------------------------------------------
 # Question-detection heuristics
@@ -614,7 +617,7 @@ class SessionManager:
         needs_classifier = self._needs_classifier(normalized)
 
         if self.pending_question_segments and has_answer_lead_in:
-            print(f"[wingman] Answer lead-in, early flush: {normalized!r}")
+            log.debug("Answer lead-in, early flush: %s", redact(normalized))
             self._flush_pending_question_if_ready(force=True)
             self.pending_utterance_segments.append(normalized)
         elif (
@@ -767,7 +770,7 @@ class SessionManager:
                 )
             else:
                 fallback = "I lost the answer stream. Please ask the question again."
-            print(f"[wingman] Answer generation failed: {error}")
+            log.error("Answer generation failed: %s", error, exc_info=True)
             tokens = [fallback]
             fan({"type": "token", "text": fallback})
 

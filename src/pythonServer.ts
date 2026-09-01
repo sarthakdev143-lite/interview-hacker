@@ -60,6 +60,10 @@ export class PythonServerManager {
         PYTHONUNBUFFERED: '1',
         WINGMAN_HISTORY_DIR: historyDir,
         WINGMAN_SERVER_TOKEN: this.authToken,
+        // The sidecar logs to a rotating file here. Its stdout/stderr go to a
+        // console that does not exist in a packaged build (console=False +
+        // windowsHide), so without this a shipped app has no diagnostics at all.
+        WINGMAN_LOG_DIR: path.dirname(historyDir),
       },
       stdio: 'pipe',
       windowsHide: true,

@@ -13,7 +13,7 @@ from typing import Generator
 
 from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
-from werkzeug.serving import make_server
+from werkzeug.serving import WSGIRequestHandler, make_server
 
 from groq import Groq
 
@@ -26,6 +26,9 @@ from llm import (
 )
 from resume_parser import extract_text_from_pdf
 from session_manager import DEFAULT_TRANSCRIPTION_PROVIDER, SessionManager
+from wingman_logging import get_logger
+
+log = get_logger("server")
 
 SUPPORTED_TRANSCRIPTION_PROVIDERS = ("groq", "deepgram")
 
@@ -40,6 +43,26 @@ history_dir = os.environ.get("WINGMAN_HISTORY_DIR", os.path.join(os.getcwd(), "h
 server_token = os.environ.get("WINGMAN_SERVER_TOKEN", "")
 sessions = SessionManager(history_dir)
 server_holder: dict[str, object] = {"server": None, "port": 0}
+
+
+class QuietRequestHandler(WSGIRequestHandler):
+    """Access log without the query string.
+
+    EventSource cannot set headers, so SSE passes the server token as
+    ``?token=``. The default handler writes the full request line to stderr,
+    which Electron buffers and embeds verbatim into startup error messages —
+    putting the secret in a log and a dialog.
+    """
+
+    def log_request(self, code="-", size="-"):
+        requestline = str(self.requestline).split("?", 1)[0]
+        log.debug('"%s" %s %s', requestline, code, size)
+
+    def log_error(self, format, *args):  # noqa: A002 - base class signature
+        log.warning(format, *args)
+
+    def log_message(self, format, *args):  # noqa: A002 - base class signature
+        log.debug(format, *args)
 
 
 def sse_format(payload: dict) -> str:

@@ -33,6 +33,9 @@ import websocket
 from groq import Groq
 
 from vad import SAMPLE_RATE, Utterance, UtteranceSegmenter
+from wingman_logging import get_logger
+
+log = get_logger("transcriber")
 
 DEFAULT_STT_MODEL = "whisper-large-v3-turbo"
 
@@ -203,7 +206,7 @@ class GroqTranscriber:
             try:
                 completed = self.segmenter.push(chunk)
             except Exception as error:  # pragma: no cover - defensive
-                print(f"[wingman] VAD error: {error}")
+                log.error("VAD error: %s", error, exc_info=True)
                 continue
 
             for utterance in completed:
@@ -227,7 +230,7 @@ class GroqTranscriber:
         try:
             text = self._call_groq(utterance)
         except Exception as error:  # pragma: no cover - defensive
-            print(f"[wingman] Groq transcription failed: {error}")
+            log.error("Groq transcription failed: %s", error)
             self._notify_error(str(error))
         finally:
             self._emit_in_order(seq, text)
@@ -317,7 +320,7 @@ class GroqTranscriber:
             try:
                 self.on_transcript(value, True)
             except Exception as error:  # pragma: no cover - defensive
-                print(f"[wingman] Transcript callback failed: {error}")
+                log.error("Transcript callback failed: %s", error, exc_info=True)
 
     def _notify_activity(self, active: bool) -> None:
         if self.on_activity is None or self.stop_event.is_set():
@@ -325,7 +328,7 @@ class GroqTranscriber:
         try:
             self.on_activity(active)
         except Exception as error:  # pragma: no cover - defensive
-            print(f"[wingman] Activity callback failed: {error}")
+            log.error("Activity callback failed: %s", error, exc_info=True)
 
     def _notify_error(self, message: str) -> None:
         if self.on_error is None or self.stop_event.is_set():
@@ -541,19 +544,18 @@ class DeepgramTranscriber:
         try:
             self.on_transcript(transcript, is_final)
         except Exception as error:
-            print(f"[wingman] Deepgram transcript callback failed: {error}")
+            log.error("Deepgram transcript callback failed: %s", error, exc_info=True)
 
     def _handle_error(self, _ws: websocket.WebSocketApp, error):
         self._error_message = str(error)
         self.error_event.set()
-        print(f"[wingman] Deepgram WebSocket error: {error}")
+        log.error("Deepgram WebSocket error: %s", error)
 
     def _handle_close(self, _ws: websocket.WebSocketApp, status_code, close_msg):
         self.closed_event.set()
         if not self.stop_event.is_set():
-            print(
-                f"[wingman] Deepgram WebSocket closed unexpectedly: "
-                f"{status_code} {close_msg}"
+            log.warning(
+                "Deepgram WebSocket closed unexpectedly: %s %s", status_code, close_msg
             )
 
 

@@ -20,6 +20,10 @@ from typing import Callable
 
 import numpy as np
 
+from wingman_logging import get_logger
+
+log = get_logger("vad")
+
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 512
 FRAME_BYTES = FRAME_SAMPLES * 2
@@ -230,7 +234,7 @@ class UtteranceSegmenter:
         try:
             callback()
         except Exception as error:  # pragma: no cover - defensive
-            print(f"[wingman] VAD callback failed: {error}")
+            log.error("VAD callback failed: %s", error, exc_info=True)
 
     @staticmethod
     def _frame_rms(frame: bytes) -> float:

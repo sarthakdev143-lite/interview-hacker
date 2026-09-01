@@ -76,7 +76,15 @@ export class PythonServerManager {
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
-    let spawnError: Error | null = null;
+
+    // These are written from event callbacks and read from the poll loop below.
+    // TypeScript's control-flow analysis does not track assignments made inside
+    // a nested function, so plain `let` bindings would narrow to `null` at the
+    // read sites. A holder object keeps them honestly typed.
+    const startup: {
+      spawnError: Error | null;
+      exit: { code: number | null; signal: NodeJS.Signals | null } | null;
+    } = { spawnError: null, exit: null };
 
     this.child.stdout.on('data', (chunk: Buffer) => {
       stdoutBuffer += chunk.toString();
@@ -86,7 +94,7 @@ export class PythonServerManager {
         if (line.startsWith(PORT_PREFIX)) {
           this.port = Number(line.slice(PORT_PREFIX.length));
         } else {
-          console.log(`[wingman-python] ${line}`);
+          console.warn(`[wingman-python] ${line}`);
         }
       }
     });
@@ -102,21 +110,20 @@ export class PythonServerManager {
     });
 
     this.child.once('error', (error) => {
-      spawnError = error;
+      startup.spawnError = error;
       stderrBuffer += `${error.message}\n`;
     });
 
     // The pid is captured here because the exit handler clears `this.child`,
     // and the netstat lookup below still needs it.
     const childPid = this.child.pid;
-    let earlyExit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
 
     this.child.on('exit', (code, signal) => {
       const expected = this.isExpectedShutdown;
       if (code !== 0 && code !== null) {
         console.error(`[wingman-python] exited with code ${code}`);
       }
-      earlyExit = { code, signal };
+      startup.exit = { code, signal };
       this.child = null;
       this.port = null;
       this.isExpectedShutdown = false;
@@ -125,9 +132,10 @@ export class PythonServerManager {
 
     const startedAt = Date.now();
     while (!this.port) {
-      if (spawnError) {
+      const failure = startup.spawnError;
+      if (failure) {
         throw new Error(
-          `Failed to start Python server (${command}): ${spawnError.message}`,
+          `Failed to start Python server (${command}): ${failure.message}`,
         );
       }
 
@@ -135,8 +143,7 @@ export class PythonServerManager {
       // be tracked separately. Reading `this.child?.exitCode` here instead used
       // to yield undefined and fall through to the 20s timeout below, reporting
       // "did not report a port in time" for a process that had died instantly.
-      const exit: { code: number | null; signal: NodeJS.Signals | null } | null =
-        earlyExit;
+      const exit = startup.exit;
       if (exit) {
         const cause = exit.signal
           ? `was terminated by ${exit.signal}`
@@ -150,7 +157,7 @@ export class PythonServerManager {
         const discoveredPort = await this.discoverPortFromProcess(childPid);
         if (discoveredPort) {
           this.port = discoveredPort;
-          console.log(
+          console.warn(
             `[wingman-python] discovered port ${discoveredPort} from process lookup`,
           );
           break;

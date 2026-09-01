@@ -22,6 +22,24 @@
     }
   },
   "rules": {
-    "@typescript-eslint/no-explicit-any": "off"
-  }
+    "@typescript-eslint/no-unused-vars": [
+      "error",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
+    ],
+    "no-console": ["warn", { "allow": ["warn", "error"] }],
+    "eqeqeq": ["error", "smart"],
+    "no-restricted-globals": [
+      "error",
+      {
+        "name": "fetch",
+        "message": "Renderer code must go through src/lib/backend.ts so the server token is attached."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["src/lib/backend.ts", "src/main.ts", "src/pythonServer.ts"],
+      "rules": { "no-restricted-globals": "off" }
+    }
+  ]
 }

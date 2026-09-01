@@ -13,6 +13,7 @@ import type { HealthPayload } from './types/contracts';
 
 const PORT_PREFIX = 'PORT:';
 const execFileAsync = promisify(execFile);
+const MAX_STDERR_BUFFER = 16 * 1024;
 
 export interface PythonServerExitInfo {
   code: number | null;
@@ -64,6 +65,10 @@ export class PythonServerManager {
         // console that does not exist in a packaged build (console=False +
         // windowsHide), so without this a shipped app has no diagnostics at all.
         WINGMAN_LOG_DIR: path.dirname(historyDir),
+        // Lets the sidecar exit on its own if this process dies without running
+        // shutdown() — killed from Task Manager, or hard-crashed. Otherwise it
+        // survives holding the loopback capture device and a listening socket.
+        WINGMAN_PARENT_PID: String(process.pid),
       },
       stdio: 'pipe',
       windowsHide: true,
@@ -88,7 +93,9 @@ export class PythonServerManager {
 
     this.child.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
-      stderrBuffer += text;
+      // Only used to explain a startup failure, but the handler stays attached
+      // for the life of the process, so it must not grow without bound.
+      stderrBuffer = (stderrBuffer + text).slice(-MAX_STDERR_BUFFER);
       for (const line of splitLines(text)) {
         console.error(`[wingman-python] ${line}`);
       }
@@ -353,13 +360,60 @@ export class PythonServerManager {
     }
 
     const child = this.child;
-    const exitPromise = once(child, 'exit');
+    const exitController = new AbortController();
+    const exitPromise = once(child, 'exit', { signal: exitController.signal }).catch(
+      () => undefined,
+    );
+
     try {
       await Promise.race([exitPromise, delay(4000)]);
     } finally {
-      if (child.exitCode === null) {
-        child.kill();
+      // Without this, `once` keeps its listener attached whenever the timeout
+      // wins the race.
+      exitController.abort();
+      await this.terminate(child);
+    }
+  }
+
+  /**
+   * Terminates the sidecar, escalating until it is actually gone.
+   *
+   * A polite SIGTERM with no follow-up is not enough: the sidecar can be
+   * blocked inside a native audio callback, and it holds the WASAPI loopback
+   * device and a listening socket. Leaving it running means the next launch
+   * finds the device busy.
+   */
+  private async terminate(child: ChildProcessWithoutNullStreams) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return;
+    }
+
+    child.kill();
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return;
       }
+      await delay(200);
+    }
+
+    if (process.platform === 'win32' && child.pid) {
+      // SIGTERM is emulated on Windows and a frozen PyInstaller process can
+      // ignore it. taskkill /T /F takes the whole tree.
+      try {
+        await execFileAsync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+          windowsHide: true,
+        });
+        return;
+      } catch {
+        // Fall through to SIGKILL.
+      }
+    }
+
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Already gone.
     }
   }
 

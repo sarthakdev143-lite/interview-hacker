@@ -9,6 +9,7 @@ import os
 import platform as _platform
 import sys
 import threading
+import time
 from typing import Generator
 
 from flask import Flask, Response, jsonify, request
@@ -255,9 +256,82 @@ def shutdown():
     return jsonify({"status": "shutting-down"})
 
 
-if __name__ == "__main__":
-    server = make_server("127.0.0.1", 0, app, threaded=True)
+PARENT_POLL_SECONDS = 2.0
+
+
+def _parent_is_alive(parent_pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        # STILL_ACTIVE. OpenProcess fails outright once the handle is gone.
+        process_handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, parent_pid)
+        if not process_handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(
+                process_handle, ctypes.byref(exit_code)
+            )
+            return bool(ok) and exit_code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(process_handle)
+
+    try:
+        os.kill(parent_pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def start_parent_watchdog() -> None:
+    """Exit when the Electron process that spawned us is gone.
+
+    The sidecar holds the loopback capture device and a listening socket. If
+    Electron is killed from Task Manager, or crashes hard, its shutdown path
+    never runs and this process survives — busy device, stale port, and a
+    background process the user did not ask for.
+    """
+    raw_pid = os.environ.get("WINGMAN_PARENT_PID", "").strip()
+    if not raw_pid.isdigit():
+        return
+
+    parent_pid = int(raw_pid)
+
+    def watch():
+        while True:
+            time.sleep(PARENT_POLL_SECONDS)
+            if _parent_is_alive(parent_pid):
+                continue
+            log.warning("Parent process %s is gone; shutting down.", parent_pid)
+            try:
+                sessions.stop_session()
+            except Exception:
+                log.debug("Session stop during watchdog exit failed", exc_info=True)
+            # os._exit rather than a graceful shutdown: there is no client left
+            # to serve, and serve_forever is on the main thread.
+            os._exit(0)
+
+    threading.Thread(target=watch, name="wingman-parent-watchdog", daemon=True).start()
+
+
+def main() -> int:
+
+    # This is Werkzeug's server, invoked programmatically. That is a deliberate
+    # choice, not an oversight: the sidecar is bound to loopback with a single
+    # local client, and a production WSGI server would add a dependency and a
+    # process for no benefit. Do not expose this beyond 127.0.0.1.
+    start_parent_watchdog()
+    server = make_server(
+        "127.0.0.1", 0, app, threaded=True, request_handler=QuietRequestHandler
+    )
     server_holder["server"] = server
     server_holder["port"] = server.server_port
+    log.info("Listening on 127.0.0.1:%s", server.server_port)
+    # The handshake line Electron waits for. Must stay on stdout and stay first.
     print(f"PORT:{server.server_port}", flush=True)
     server.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

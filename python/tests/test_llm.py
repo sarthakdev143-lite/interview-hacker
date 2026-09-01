@@ -20,6 +20,7 @@ from llm import (  # noqa: E402
     is_reasoning_model,
     is_retryable,
     list_chat_models,
+    list_chat_models_or_empty,
     pick_model,
     retry_after_seconds,
 )
@@ -79,8 +80,31 @@ class ModelFilteringTests(unittest.TestCase):
 
         self.assertEqual(models, sorted(LIVE_MODELS))
 
-    def test_listing_survives_an_api_failure(self):
-        self.assertEqual(list_chat_models(FakeClient([], raises=True)), [])
+    def test_listing_propagates_an_api_failure(self):
+        """The picker needs to tell an invalid key apart from an empty account.
+
+        Swallowing the error and returning [] made a rejected key, a network
+        outage and a genuinely empty catalog indistinguishable, so the dashboard
+        showed an empty model list with no explanation for any of them.
+        """
+        with self.assertRaises(RuntimeError):
+            list_chat_models(FakeClient([], raises=True))
+
+    def test_session_start_still_survives_an_api_failure(self):
+        """Absence of evidence is not evidence the model is gone."""
+        self.assertEqual(list_chat_models_or_empty(FakeClient([], raises=True)), [])
+
+    def test_resolve_models_keeps_the_request_when_the_catalog_is_unreachable(self):
+        client = LLMClient.__new__(LLMClient)
+        client.client = FakeClient([], raises=True)
+        client.default_model = DEFAULT_ANSWER_MODEL
+        client.classifier_model = ""
+        client.available_models = []
+
+        resolution = client.resolve_models("openai/gpt-oss-120b")
+
+        self.assertEqual(resolution["answer_model"], "openai/gpt-oss-120b")
+        self.assertEqual(resolution["fell_back_from"], "")
 
 
 class PickModelTests(unittest.TestCase):

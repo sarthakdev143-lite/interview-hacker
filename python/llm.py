@@ -70,7 +70,8 @@ CLASSIFIER_MODEL_PREFERENCES = (
 REASONING_MODEL_PREFIXES = ("openai/gpt-oss", "qwen/qwen3")
 
 # Substrings that mark a model as not usable for chat completions.
-NON_CHAT_MARKERS = ("whisper", "orpheus", "prompt-guard", "guard", "tts", "embed")
+# "guard" subsumes "prompt-guard" and "llama-guard".
+NON_CHAT_MARKERS = ("whisper", "orpheus", "guard", "tts", "embed")
 
 # Generous enough that hidden reasoning cannot swallow the whole answer.
 ANSWER_MAX_TOKENS = 900
@@ -154,12 +155,14 @@ def is_chat_model(model_id: str) -> bool:
 
 
 def list_chat_models(client: Groq) -> list[str]:
-    """Chat-capable model IDs this API key can actually reach."""
-    try:
-        response = client.models.list()
-    except Exception as error:
-        print(f"[wingman] Could not list Groq models: {error}")
-        return []
+    """Chat-capable model IDs this API key can actually reach.
+
+    Raises on failure. An invalid key, a network outage and a genuinely empty
+    account are three different problems with three different fixes, and
+    collapsing them into ``[]`` left the model picker silently blank. Callers
+    that must not fail (session start) use :func:`list_chat_models_or_empty`.
+    """
+    response = client.models.list()
 
     models = []
     for entry in getattr(response, "data", []) or []:
@@ -171,6 +174,20 @@ def list_chat_models(client: Groq) -> list[str]:
         models.append(model_id)
 
     return sorted(models)
+
+
+def list_chat_models_or_empty(client: Groq) -> list[str]:
+    """Model catalog for callers that must survive not having one.
+
+    An empty result here means "could not determine", which is deliberately
+    indistinguishable from "no models" — both leave the requested model in
+    place, because absence of evidence is not evidence the model is gone.
+    """
+    try:
+        return list_chat_models(client)
+    except Exception as error:
+        log.warning("Could not list Groq models: %s", error)
+        return []
 
 
 def pick_model(preferences: tuple[str, ...], available: list[str], fallback: str) -> str:
@@ -234,15 +251,16 @@ class LLMClient:
         Model IDs are retired regularly, and a stored preference outlives them,
         so a session must never fail just because a saved model disappeared.
         """
-        available = list_chat_models(self.client)
+        available = list_chat_models_or_empty(self.client)
         self.available_models = available
 
         requested = (requested_answer_model or "").strip()
         if available and requested and requested not in available:
             replacement = pick_model(ANSWER_MODEL_PREFERENCES, available, DEFAULT_ANSWER_MODEL)
-            print(
-                f"[wingman] Model {requested!r} is unavailable on this key; "
-                f"falling back to {replacement!r}"
+            log.info(
+                "Model %r is unavailable on this key; falling back to %r",
+                requested,
+                replacement,
             )
             self.default_model = replacement
             fell_back_from = requested

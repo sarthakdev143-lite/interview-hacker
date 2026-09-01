@@ -1108,4 +1108,11 @@ class SessionManager:
             self.history_dir
             / f"{record['date'].replace(':', '-')}_{session_id}.json"
         )
-        file_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        try:
+            file_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        except OSError as error:
+            log.error("Could not write history for %s: %s", session_id, error)
+            self._broadcast_transcript(
+                {"type": "notice", "message": "This session could not be saved to history."}
+            )
+            return

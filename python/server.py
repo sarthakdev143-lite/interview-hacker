@@ -25,7 +25,7 @@ from llm import (
     list_chat_models,
     pick_model,
 )
-from resume_parser import extract_text_from_pdf
+from resume_parser import ResumeParseError, extract_text_from_pdf
 from session_manager import DEFAULT_TRANSCRIPTION_PROVIDER, SessionManager
 from wingman_logging import get_logger
 
@@ -49,7 +49,16 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 CORS(
     app,
     allow_headers=["Content-Type", "X-Wingman-Token"],
-    origins=["file://", "null", "http://127.0.0.1:*", "http://localhost:*"],
+    # flask_cors treats any pattern containing "*" as a regex and matches with
+    # re.match, which is an *unanchored prefix* match. "http://localhost:*"
+    # therefore also accepts "http://localhost.attacker.io". These are written
+    # as fully anchored regexes so that cannot happen. "null" is the origin a
+    # file:// page actually sends.
+    origins=[
+        "null",
+        r"^http://127\.0\.0\.1(:\d+)?$",
+        r"^http://localhost(:\d+)?$",
+    ],
 )
 
 history_dir = os.environ.get("WINGMAN_HISTORY_DIR", os.path.join(os.getcwd(), "history"))
@@ -96,11 +105,29 @@ def stream_events(events: Generator[dict, None, None]):
 
 @app.before_request
 def require_server_token():
-    if request.method == "OPTIONS" or not server_token:
+    if request.method == "OPTIONS":
         return None
 
+    # Fail closed. A missing token used to disable auth on every route, so a
+    # single unset environment variable silently exposed live transcript SSE and
+    # a billable /answer/manual to anything that could reach the loopback port.
+    if not server_token:
+        return jsonify({"error": "Server token is not configured."}), 503
+
     supplied_token = request.headers.get("X-Wingman-Token") or request.args.get("token")
-    if not supplied_token or not hmac.compare_digest(supplied_token, server_token):
+    if not supplied_token:
+        return jsonify({"error": "Forbidden"}), 403
+
+    try:
+        # compare_digest raises TypeError on non-ASCII str input, which would
+        # surface as a 500 rather than a refusal.
+        matches = hmac.compare_digest(
+            supplied_token.encode("utf-8"), server_token.encode("utf-8")
+        )
+    except (AttributeError, TypeError):
+        return jsonify({"error": "Forbidden"}), 403
+
+    if not matches:
         return jsonify({"error": "Forbidden"}), 403
 
     return None
@@ -116,6 +143,23 @@ def payload_too_large(_error):
         ),
         413,
     )
+
+
+@app.errorhandler(Exception)
+def unhandled_error(error):
+    """Never return a bare stack trace or a naked 500.
+
+    Flask re-raises HTTPExceptions it already knows how to render; everything
+    else becomes a logged incident and a generic message, so an internal detail
+    (which can include prompt text) never reaches the renderer.
+    """
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(error, HTTPException):
+        return error
+
+    log.error("Unhandled error on %s: %s", request.path, error, exc_info=True)
+    return jsonify({"error": "The WingMan service hit an unexpected error."}), 500
 
 
 @app.post("/session/start")
@@ -152,6 +196,10 @@ def start_session():
         )
     except (RuntimeError, ValueError) as error:
         return jsonify({"error": str(error)}), 400
+    except OSError as error:
+        # No loopback device, or the audio service is not running.
+        log.error("Session start failed: %s", error, exc_info=True)
+        return jsonify({"error": f"Could not start audio capture: {error}"}), 503
 
     return jsonify(result)
 
@@ -167,9 +215,36 @@ def upload_resume():
     if file is None:
         return jsonify({"error": "Missing PDF file upload."}), 400
 
-    pdf_bytes = file.read()
-    resume_text = extract_text_from_pdf(pdf_bytes)
-    return jsonify({"resume_text": resume_text})
+    # `file.filename` is deliberately never used: nothing is written to disk, so
+    # there is no path to traverse.
+    pdf_bytes = file.read(MAX_UPLOAD_BYTES + 1)
+    if not pdf_bytes:
+        return jsonify({"error": "That file is empty."}), 400
+    if len(pdf_bytes) > MAX_UPLOAD_BYTES:
+        return payload_too_large(None)
+
+    # MuPDF is a C parser. Check the magic bytes before handing it the stream,
+    # so a mis-picked .docx is a clear message rather than a 500 out of native
+    # code.
+    if not pdf_bytes.lstrip()[:5].startswith(b"%PDF-"):
+        return jsonify({"error": "That file is not a PDF."}), 400
+
+    try:
+        resume_text = extract_text_from_pdf(pdf_bytes)
+    except ResumeParseError as error:
+        return jsonify({"error": str(error)}), 400
+
+    if not resume_text.strip():
+        return (
+            jsonify(
+                {
+                    "error": "No text found in that PDF. If it is a scan, paste the text instead."
+                }
+            ),
+            400,
+        )
+
+    return jsonify({"resume_text": resume_text[:MAX_RESUME_CHARS]})
 
 
 @app.get("/transcript/stream")
@@ -243,7 +318,26 @@ def get_models():
     if not api_key:
         return jsonify({"error": "api_key is required"}), 400
 
-    models = list_chat_models(Groq(api_key=api_key))
+    client = Groq(api_key=api_key)
+    try:
+        # An invalid key, a network outage and an empty account are three
+        # different problems. Returning [] for all three left the picker blank
+        # with no explanation.
+        models = list_chat_models(client)
+    except Exception as error:
+        log.warning("Model listing failed: %s", error)
+        status = getattr(error, "status_code", None)
+        if status in (401, 403):
+            message = "That Groq API key was rejected."
+        else:
+            message = "Could not reach Groq to list models. Check your connection."
+        return jsonify({"error": message}), 502
+    finally:
+        try:
+            client.close()
+        except Exception:  # pragma: no cover - defensive
+            log.debug("Model-listing client close failed", exc_info=True)
+
     return jsonify(
         {
             "models": models,
@@ -256,6 +350,10 @@ def get_models():
 
 @app.get("/health")
 def health():
+    # probe_audio_environment never raises: /health is the sidecar's liveness
+    # signal, and a machine with no default output device (RDP, headless CI,
+    # audio service stopped) is exactly the case that needs a readable message
+    # rather than a 500 that reads as "the sidecar is dead".
     audio_probe = probe_audio_environment()
     return jsonify(
         {
@@ -343,6 +441,17 @@ def start_parent_watchdog() -> None:
 
 
 def main() -> int:
+    if not server_token:
+        # Refuse rather than serve unauthenticated. Electron always sets this;
+        # a contributor running server.py by hand should be told why.
+        print(
+            "WINGMAN_SERVER_TOKEN is not set. Refusing to start without "
+            "authentication. Launch the app with `npm run dev`, or set the "
+            "variable yourself to run the sidecar standalone.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
 
     # This is Werkzeug's server, invoked programmatically. That is a deliberate
     # choice, not an oversight: the sidecar is bound to loopback with a single

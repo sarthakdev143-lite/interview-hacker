@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Sarthak Parulekar
+# Licensed under MIT + Commons Clause — commercial use prohibited.
+
 from __future__ import annotations
 
 import sys
@@ -6,6 +9,10 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
+
+from wingman_logging import get_logger
+
+log = get_logger("audio")
 
 try:
     import sounddevice as sd
@@ -21,6 +28,25 @@ class AudioProbe:
 
 
 def probe_audio_environment() -> AudioProbe:
+    """Describe the loopback situation. Never raises.
+
+    This backs /health, which is the sidecar's liveness signal during startup.
+    A machine with no default output device (RDP session, headless CI, audio
+    service stopped) makes the underlying PortAudio/WASAPI calls throw OSError;
+    letting that escape turned "you have no loopback device" — the one message
+    the user needs — into a 500 that Electron reports as a dead sidecar.
+    """
+    try:
+        return _probe_audio_environment()
+    except Exception as error:
+        log.warning("Audio probe failed: %s", error, exc_info=True)
+        return AudioProbe(
+            ready=False,
+            message=f"Could not inspect audio devices on this system: {error}",
+        )
+
+
+def _probe_audio_environment() -> AudioProbe:
     if sys.platform == "win32":
         try:
             import pyaudiowpatch as pyaudio  # type: ignore
@@ -74,7 +100,21 @@ def _find_windows_loopback_device(audio, pyaudio_module):
     except OSError as error:
         raise RuntimeError("WASAPI is not available on this system.") from error
 
-    default_output = audio.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+    default_index = wasapi_info.get("defaultOutputDevice", -1)
+    if default_index is None or int(default_index) < 0:
+        raise RuntimeError(
+            "Windows reports no default playback device. Plug in or enable speakers "
+            "or headphones, then restart WingMan."
+        )
+
+    try:
+        default_output = audio.get_device_info_by_index(int(default_index))
+    except OSError as error:
+        raise RuntimeError(
+            "The default playback device could not be read. Check that the Windows "
+            "Audio service is running."
+        ) from error
+
     if default_output.get("isLoopbackDevice"):
         return default_output
 
@@ -88,7 +128,12 @@ def _find_windows_loopback_device(audio, pyaudio_module):
 
 
 def _find_sounddevice_loopback_device():
-    devices = sd.query_devices() if sd is not None else []
+    if sd is None:
+        return None
+    try:
+        devices = sd.query_devices()
+    except Exception as error:
+        raise RuntimeError(f"Audio devices could not be enumerated: {error}") from error
     preferred_names = ["blackhole", "loopback", "monitor"]
 
     for preferred in preferred_names:

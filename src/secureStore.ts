@@ -29,6 +29,55 @@ const DEFAULT_SETTINGS: Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeySto
   transcriptionProvider: 'groq',
 };
 
+/**
+ * `basic_text` is Electron's Linux fallback when no keyring is available. It
+ * "encrypts" with a hardcoded password, so the ciphertext is trivially
+ * reversible — but `isEncryptionAvailable()` still returns true, which is how a
+ * key ends up effectively plaintext in settings.json while the UI claims it is
+ * in the OS keychain.
+ */
+const INSECURE_STORAGE_BACKENDS = new Set(['basic_text']);
+
+const MAX_API_KEY_LENGTH = 512;
+
+export function encryptionStatus(): { available: boolean; reason: string | null } {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return {
+      available: false,
+      reason:
+        'This device has no OS credential store available, so WingMan will not write your API key to disk.',
+    };
+  }
+
+  if (process.platform === 'linux') {
+    let backend = '';
+    try {
+      backend = safeStorage.getSelectedStorageBackend();
+    } catch {
+      // Older Electron, or a platform without the API: fall through and trust
+      // isEncryptionAvailable().
+      return { available: true, reason: null };
+    }
+
+    if (INSECURE_STORAGE_BACKENDS.has(backend)) {
+      return {
+        available: false,
+        reason:
+          'No system keyring was found (gnome-keyring or kwallet). Storing your API key here would leave it recoverable in plain text, so WingMan will not save it. Install a keyring, or set GROQ_API_KEY in the environment for this session.',
+      };
+    }
+  }
+
+  return { available: true, reason: null };
+}
+
+function requireEncryption() {
+  const status = encryptionStatus();
+  if (!status.available) {
+    throw new Error(status.reason ?? 'OS encryption is unavailable on this device.');
+  }
+}
+
 export class SecureStore {
   constructor(private readonly userDataPath: string) {}
 
@@ -36,22 +85,85 @@ export class SecureStore {
     return path.join(this.userDataPath, 'settings.json');
   }
 
+  /**
+   * True once a readable settings file has been seen.
+   *
+   * A read failure is indistinguishable from "no file yet" at the fs level, and
+   * treating both as `{}` meant one truncated write turned into permanent,
+   * silent loss of both encrypted API keys the next time any setting changed.
+   */
+  private storeIsReadable = false;
+
   private async readStore(): Promise<PersistedStore> {
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.filePath, 'utf8');
-      return JSON.parse(raw) as PersistedStore;
+      raw = await fs.readFile(this.filePath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.storeIsReadable = true;
+        return {};
+      }
+      this.storeIsReadable = false;
+      throw error;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as PersistedStore;
+      this.storeIsReadable = true;
+      return parsed;
     } catch {
+      // Preserve the damaged file instead of overwriting it: it is the only
+      // copy of the encrypted keys, and it may still be recoverable by hand.
+      this.storeIsReadable = false;
+      const backupPath = `${this.filePath}.corrupt`;
+      try {
+        await fs.rename(this.filePath, backupPath);
+        console.error(
+          `[wingman] settings.json was unreadable and has been moved to ${backupPath}. Re-enter your API key.`,
+        );
+        this.storeIsReadable = true;
+      } catch (renameError) {
+        console.error('[wingman] Could not quarantine settings.json.', renameError);
+      }
       return {};
     }
   }
 
   private async writeStore(next: PersistedStore) {
     await fs.mkdir(this.userDataPath, { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(next, null, 2), 'utf8');
+
+    // Write-then-rename. A direct write that is interrupted (power loss, a full
+    // disk) leaves a truncated file, and the recovery path above cannot tell a
+    // truncated file from a missing one.
+    const tempPath = `${this.filePath}.${process.pid}.tmp`;
+    try {
+      await fs.writeFile(tempPath, JSON.stringify(next, null, 2), 'utf8');
+      await fs.rename(tempPath, this.filePath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Merge onto disk state, refusing to merge onto a failed read. */
+  private async mergeStore(patch: PersistedStore, remove: (keyof PersistedStore)[] = []) {
+    const current = await this.readStore();
+    if (!this.storeIsReadable) {
+      throw new Error(
+        'WingMan could not read its settings file, so it will not overwrite it. Check the log for details.',
+      );
+    }
+
+    const merged: PersistedStore = { ...current, ...patch };
+    for (const key of remove) {
+      delete merged[key];
+    }
+    await this.writeStore(merged);
+    return merged;
   }
 
   async getSettings(): Promise<PublicSettings> {
-    const store = await this.readStore();
+    const store = await this.readStore().catch(() => ({}) as PersistedStore);
     return {
       language: store.language ?? DEFAULT_SETTINGS.language,
       model: store.model ?? DEFAULT_SETTINGS.model,
@@ -68,80 +180,70 @@ export class SecureStore {
   async updateSettings(
     updates: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>>,
   ): Promise<PublicSettings> {
-    const current = await this.readStore();
-    const merged: PersistedStore = {
-      ...current,
-      ...updates,
-    };
-    await this.writeStore(merged);
+    await this.mergeStore(updates as PersistedStore);
     return this.getSettings();
   }
 
-  async saveApiKey(apiKey: string) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('OS encryption is unavailable on this device.');
+  private encryptKey(apiKey: unknown): string {
+    if (typeof apiKey !== 'string') {
+      throw new Error('API key must be a string.');
     }
 
-    const current = await this.readStore();
-    const encrypted = safeStorage.encryptString(apiKey).toString('base64');
-    await this.writeStore({
-      ...current,
-      encryptedApiKey: encrypted,
-    });
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      throw new Error('API key cannot be empty.');
+    }
+    // No provider issues keys anywhere near this long; the bound is here so an
+    // arbitrarily large string cannot be written into settings.json.
+    if (trimmed.length > MAX_API_KEY_LENGTH) {
+      throw new Error('That API key is not valid.');
+    }
+
+    requireEncryption();
+    return safeStorage.encryptString(trimmed).toString('base64');
+  }
+
+  private decryptKey(encrypted: string | undefined): string | null {
+    if (!encrypted) {
+      return null;
+    }
+
+    requireEncryption();
+    try {
+      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+    } catch (error) {
+      // A key encrypted under a different OS user, machine or keyring cannot be
+      // recovered. Say so rather than surfacing a raw decrypt failure.
+      console.error('[wingman] Stored API key could not be decrypted.', error);
+      throw new Error(
+        'Your saved API key could not be decrypted on this machine. Please re-enter it.',
+      );
+    }
+  }
+
+  async saveApiKey(apiKey: string) {
+    await this.mergeStore({ encryptedApiKey: this.encryptKey(apiKey) });
   }
 
   async clearApiKey() {
-    const current = await this.readStore();
-    delete current.encryptedApiKey;
-    await this.writeStore(current);
+    await this.mergeStore({}, ['encryptedApiKey']);
   }
 
   async getApiKey(): Promise<string | null> {
     const current = await this.readStore();
-    if (!current.encryptedApiKey) {
-      return null;
-    }
-
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('OS encryption is unavailable on this device.');
-    }
-
-    return safeStorage.decryptString(
-      Buffer.from(current.encryptedApiKey, 'base64'),
-    );
+    return this.decryptKey(current.encryptedApiKey);
   }
 
   async saveDeepgramApiKey(apiKey: string) {
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('OS encryption is unavailable on this device.');
-    }
-
-    const current = await this.readStore();
-    const encrypted = safeStorage.encryptString(apiKey).toString('base64');
-    await this.writeStore({
-      ...current,
-      encryptedDeepgramApiKey: encrypted,
-    });
+    await this.mergeStore({ encryptedDeepgramApiKey: this.encryptKey(apiKey) });
   }
 
   async clearDeepgramApiKey() {
-    const current = await this.readStore();
-    delete current.encryptedDeepgramApiKey;
-    await this.writeStore(current);
+    await this.mergeStore({}, ['encryptedDeepgramApiKey']);
   }
 
   async getDeepgramApiKey(): Promise<string | null> {
     const current = await this.readStore();
-    if (!current.encryptedDeepgramApiKey) {
-      return null;
-    }
-
-    if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('OS encryption is unavailable on this device.');
-    }
-
-    return safeStorage.decryptString(
-      Buffer.from(current.encryptedDeepgramApiKey, 'base64'),
-    );
+    return this.decryptKey(current.encryptedDeepgramApiKey);
   }
 }

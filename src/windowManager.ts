@@ -1,6 +1,7 @@
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { getDevServerOrigin, getDevServerUrl } from './devServer';
 import type { AppState, OverlayBounds, OverlayPreset } from './types/contracts';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -18,12 +19,12 @@ export class WindowManager {
   }
 
   private isAppUrl(rawUrl: string) {
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    const devServerOrigin = getDevServerOrigin();
     try {
       const parsed = new URL(rawUrl);
 
-      if (devServerUrl) {
-        return parsed.origin === new URL(devServerUrl).origin;
+      if (devServerOrigin) {
+        return parsed.origin === devServerOrigin;
       }
 
       return rawUrl.startsWith(pathToFileURL(this.rendererPath).toString());
@@ -126,7 +127,9 @@ export class WindowManager {
   // ─── Window creation ───────────────────────────────────────────────────────
 
   private async loadRoute(window: BrowserWindow, route: string) {
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    // Null in a packaged build, so the bundled renderer is the only thing a
+    // shipped app will ever load.
+    const devServerUrl = getDevServerUrl();
     if (devServerUrl) {
       await window.loadURL(`${devServerUrl}#${route}`);
       return;

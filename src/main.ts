@@ -12,6 +12,7 @@ import 'dotenv/config';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { getDevServerOrigin } from './devServer';
 import {
   PythonServerManager,
   type PythonServerExitInfo,
@@ -113,13 +114,15 @@ function normalizeExternalUrl(rawUrl: string) {
 }
 
 function isTrustedRendererUrl(rawUrl: string) {
-  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  // getDevServerOrigin() returns null in a packaged build regardless of the
+  // environment, so a planted .env cannot widen what IPC will accept.
+  const devServerOrigin = getDevServerOrigin();
 
   try {
     const parsed = new URL(rawUrl);
 
-    if (devServerUrl) {
-      return parsed.origin === new URL(devServerUrl).origin;
+    if (devServerOrigin) {
+      return parsed.origin === devServerOrigin;
     }
 
     return rawUrl.startsWith(rendererIndexUrl);

@@ -203,6 +203,13 @@ DEFAULT_TRANSCRIPTION_PROVIDER = "groq"
 # Spend updates are cheap to compute but noisy to stream, so they are throttled.
 USAGE_BROADCAST_INTERVAL_SECONDS = 3.0
 
+# A stalled Groq stream can hold the answer worker well past stop_session's join
+# timeout. Rather than wait for it, stop invalidates the runtime so the straggler
+# can never emit, and these caps bound what it can consume on the way out.
+MAX_CONCURRENT_CLASSIFIERS = 3
+MAX_PENDING_ANSWERS = 8
+MAX_SSE_SUBSCRIBERS = 16
+
 
 class SessionManager:
     def __init__(self, history_dir: str):
@@ -217,6 +224,7 @@ class SessionManager:
         self.lifecycle_lock = threading.RLock()
         self.subscriber_lock = threading.Lock()
         self.runtime_id: int = 0
+        self._classifier_slots = threading.Semaphore(MAX_CONCURRENT_CLASSIFIERS)
         self._reset_runtime()
 
     # ------------------------------------------------------------------
@@ -252,7 +260,11 @@ class SessionManager:
         self.usage = UsageTracker()
         self._usage_broadcast_at = 0.0
         self.audio_queue: queue.Queue[bytes] = queue.Queue(maxsize=512)
-        self.answer_queue: queue.Queue[tuple[str, queue.Queue | None]] = queue.Queue()
+        # Bounded: if the answer worker dies, questions must not accumulate
+        # without back-pressure or any signal to the user.
+        self.answer_queue: queue.Queue[tuple[str, queue.Queue | None]] = queue.Queue(
+            maxsize=MAX_PENDING_ANSWERS
+        )
         self.stop_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
         self.answer_worker_thread: threading.Thread | None = None
@@ -489,16 +501,26 @@ class SessionManager:
     # ------------------------------------------------------------------
 
     def subscribe_transcripts(self) -> Generator[dict, None, None]:
-        subscriber: queue.Queue = queue.Queue(maxsize=256)
-        with self.subscriber_lock:
-            self.transcript_subscribers.add(subscriber)
+        subscriber = self._register_subscriber(self.transcript_subscribers)
         return self._yield_queue(subscriber, kind="transcript")
 
     def subscribe_answers(self) -> Generator[dict, None, None]:
+        subscriber = self._register_subscriber(self.answer_subscribers)
+        return self._yield_queue(subscriber, kind="answer")
+
+    def _register_subscriber(self, collection: set) -> queue.Queue:
+        """Add an SSE subscriber, capped.
+
+        Only two windows subscribe, so hitting the cap means connections are
+        leaking. The heartbeat reaps dead ones within 15s; this bounds the
+        damage in the meantime, since each subscriber also costs a server thread.
+        """
         subscriber: queue.Queue = queue.Queue(maxsize=256)
         with self.subscriber_lock:
-            self.answer_subscribers.add(subscriber)
-        return self._yield_queue(subscriber, kind="answer")
+            if len(collection) >= MAX_SSE_SUBSCRIBERS:
+                raise RuntimeError("Too many open event streams.")
+            collection.add(subscriber)
+        return subscriber
 
     def current_usage(self) -> dict:
         return self._usage_snapshot()
@@ -828,24 +850,32 @@ class SessionManager:
             or self._looks_like_interview_prompt(question)
             or self._needs_classifier(question)
         ):
-            print(f"[wingman] No question signal, skipping classifier: {question!r:.120}")
+            log.debug("No question signal, skipping classifier: %s", redact(question))
             self._go_listening()
             return
 
         if question == self._last_enqueued_question:
-            print("[wingman] Duplicate question, skipping")
+            log.debug("Duplicate question, skipping")
             self._go_listening()
             return
 
         if self._looks_like_direct_question(segments, question):
-            print(f"[wingman] Direct question, enqueueing: {question!r:.200}")
+            log.info("Direct question, enqueueing: %s", redact(question))
             self._enqueue_question(question)
             return
 
-        print(f"[wingman] Classifying: {question!r:.200}")
+        log.info("Classifying: %s", redact(question))
+        # A non-English session sends most utterances here, so an unbounded
+        # thread-per-flush becomes thread-per-utterance the moment Groq stalls.
+        if not self._classifier_slots.acquire(blocking=False):
+            log.warning("Classifier saturated, assuming question: %s", redact(question))
+            self._enqueue_question(question)
+            return
+
         threading.Thread(
             target=self._classify_and_enqueue,
             args=(question, self.runtime_id, self.stop_event, self.llm),
+            name="wingman-classify",
             daemon=True,
         ).start()
 
@@ -856,31 +886,45 @@ class SessionManager:
         stop_event: threading.Event,
         llm: LLMClient | None,
     ):
-        if stop_event.is_set() or self.runtime_id != runtime_id:
-            return
-
         try:
-            is_question = llm.is_question(question) if llm else False
-        except Exception as error:
-            print(f"[wingman] Classifier failed, assuming yes: {error}")
-            is_question = True
+            if stop_event.is_set() or self.runtime_id != runtime_id:
+                return
 
-        if stop_event.is_set() or self.runtime_id != runtime_id:
-            return
+            try:
+                is_question = llm.is_question(question) if llm else False
+            except Exception as error:
+                log.warning("Classifier failed, assuming yes: %s", error)
+                is_question = True
 
-        if not is_question:
-            print(f"[wingman] LLM says NOT a question: {question!r:.120}")
-            self._go_listening()
-            return
+            if stop_event.is_set() or self.runtime_id != runtime_id:
+                return
 
-        print(f"[wingman] QUESTION CONFIRMED: {question!r:.200}")
-        self._enqueue_question(question)
+            if not is_question:
+                log.info("Classifier says not a question: %s", redact(question))
+                self._go_listening()
+                return
+
+            log.info("Question confirmed: %s", redact(question))
+            self._enqueue_question(question)
+        finally:
+            self._classifier_slots.release()
 
     def _enqueue_question(self, question: str):
         self._recent_context.clear()
         self.pending_utterance_segments = []
         self._last_enqueued_question = question
-        self.answer_queue.put((question, None))
+        try:
+            self.answer_queue.put_nowait((question, None))
+        except queue.Full:
+            # The answer worker is wedged or Groq is stalling. Say so instead of
+            # queueing an answer nobody will see in time.
+            log.warning("Answer queue full, dropping question %s", redact(question))
+            self._broadcast_transcript(
+                {
+                    "type": "notice",
+                    "message": "Still answering the previous question — this one was skipped.",
+                }
+            )
 
     def _go_listening(self):
         self.status = "listening"

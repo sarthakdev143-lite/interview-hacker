@@ -481,6 +481,39 @@ class RuntimeFencingTests(unittest.TestCase):
 
         self.assertEqual(local_queue.get_nowait(), {"type": "done"})
 
+    def test_a_full_answer_queue_notifies_instead_of_growing(self):
+        subscriber: queue.Queue = queue.Queue()
+        self.manager.transcript_subscribers.add(subscriber)
+
+        for index in range(session_manager.MAX_PENDING_ANSWERS):
+            self.manager.answer_queue.put_nowait((f"q{index}", None))
+
+        self.manager._enqueue_question("one too many")
+
+        self.assertEqual(
+            self.manager.answer_queue.qsize(), session_manager.MAX_PENDING_ANSWERS
+        )
+        messages = []
+        while True:
+            try:
+                event = subscriber.get_nowait()
+            except queue.Empty:
+                break
+            if event.get("type") == "notice":
+                messages.append(event.get("message", ""))
+
+        self.assertTrue(
+            any("skipped" in message for message in messages),
+            "a dropped question must be reported, not silently lost",
+        )
+
+    def test_subscribers_are_capped(self):
+        for _ in range(session_manager.MAX_SSE_SUBSCRIBERS):
+            self.manager._register_subscriber(self.manager.transcript_subscribers)
+
+        with self.assertRaises(RuntimeError):
+            self.manager._register_subscriber(self.manager.transcript_subscribers)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,7 +33,19 @@ log = get_logger("server")
 
 SUPPORTED_TRANSCRIPTION_PROVIDERS = ("groq", "deepgram")
 
+# A resume is a handful of pages. Anything past this is a mistake or an attempt
+# to exhaust memory, and Werkzeug rejects it before the body is buffered.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# Bounds on free-text fields forwarded to the LLM. Generous for real input,
+# finite for anything else.
+MAX_RESUME_CHARS = 60_000
+MAX_CONTEXT_CHARS = 20_000
+MAX_PROMPT_CHARS = 8_000
+MAX_MODEL_CHARS = 128
+MAX_LANGUAGE_CHARS = 32
+
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 CORS(
     app,
     allow_headers=["Content-Type", "X-Wingman-Token"],
@@ -66,6 +78,10 @@ class QuietRequestHandler(WSGIRequestHandler):
         log.debug(format, *args)
 
 
+def clamp(value: object, limit: int) -> str:
+    return str(value or "").strip()[:limit]
+
+
 def sse_format(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
@@ -88,6 +104,18 @@ def require_server_token():
         return jsonify({"error": "Forbidden"}), 403
 
     return None
+
+
+@app.errorhandler(413)
+def payload_too_large(_error):
+    return (
+        jsonify(
+            {
+                "error": f"File is larger than the {MAX_UPLOAD_BYTES // (1024 * 1024)}MB limit."
+            }
+        ),
+        413,
+    )
 
 
 @app.post("/session/start")
@@ -113,10 +141,10 @@ def start_session():
 
     try:
         result = sessions.start_session(
-            resume_text=str(payload.get("resume_text", "")).strip(),
-            extra_context=str(payload.get("extra_context", "")).strip(),
-            language=str(payload.get("language", "en")).strip() or "en",
-            model=str(payload.get("model") or DEFAULT_ANSWER_MODEL).strip(),
+            resume_text=clamp(payload.get("resume_text"), MAX_RESUME_CHARS),
+            extra_context=clamp(payload.get("extra_context"), MAX_CONTEXT_CHARS),
+            language=clamp(payload.get("language"), MAX_LANGUAGE_CHARS) or "en",
+            model=clamp(payload.get("model"), MAX_MODEL_CHARS) or DEFAULT_ANSWER_MODEL,
             api_key=api_key,
             deepgram_api_key=deepgram_api_key,
             history_enabled=bool(payload.get("history_enabled", False)),
@@ -173,7 +201,7 @@ def answer_stream():
 @app.post("/answer/manual")
 def answer_manual():
     payload = request.get_json(force=True, silent=False) or {}
-    prompt = str(payload.get("prompt", "")).strip()
+    prompt = clamp(payload.get("prompt"), MAX_PROMPT_CHARS)
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 

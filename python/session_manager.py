@@ -211,6 +211,10 @@ class SessionManager:
         self.transcript_subscribers: set[queue.Queue] = set()
         self.answer_subscribers: set[queue.Queue] = set()
         self.state_lock = threading.Lock()
+        # start_session calls stop_session, so this has to be re-entrant. It is
+        # held across the whole of both, which is what keeps two concurrent
+        # POST /session/start requests from interleaving a teardown into a build.
+        self.lifecycle_lock = threading.RLock()
         self.subscriber_lock = threading.Lock()
         self.runtime_id: int = 0
         self._reset_runtime()
@@ -218,6 +222,22 @@ class SessionManager:
     # ------------------------------------------------------------------
     # Internal state
     # ------------------------------------------------------------------
+
+    def _close_clients(self):
+        """Release the httpx connection pools owned by this runtime.
+
+        Both LLMClient and GroqTranscriber construct their own Groq client, and
+        dropping the reference leaves the pool to the garbage collector. Over
+        many start/stop cycles that is two leaked pools per session.
+        """
+        for client in (self.llm, self.transcriber):
+            close = getattr(client, "close", None)
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as error:
+                log.debug("Client close failed: %s", error)
 
     def _reset_runtime(self):
         self.session_id = None
@@ -264,10 +284,35 @@ class SessionManager:
         history_enabled: bool = False,
         transcription_provider: str = DEFAULT_TRANSCRIPTION_PROVIDER,
     ) -> dict:
+        with self.lifecycle_lock:
+            return self._start_session_locked(
+                resume_text=resume_text,
+                extra_context=extra_context,
+                language=language,
+                model=model,
+                api_key=api_key,
+                deepgram_api_key=deepgram_api_key,
+                history_enabled=history_enabled,
+                transcription_provider=transcription_provider,
+            )
+
+    def _start_session_locked(
+        self,
+        *,
+        resume_text: str,
+        extra_context: str,
+        language: str,
+        model: str,
+        api_key: str,
+        deepgram_api_key: str,
+        history_enabled: bool,
+        transcription_provider: str,
+    ) -> dict:
         self.stop_session()
 
         with self.state_lock:
             self.runtime_id += 1
+            runtime_id = self.runtime_id
             self.session_id = str(uuid4())
             self.session = {
                 "resume_text": resume_text,
@@ -308,15 +353,34 @@ class SessionManager:
             resolution = self.llm.resolve_models(model)
             self.session["model"] = resolution["answer_model"]
             self.model_fallback = resolution["fell_back_from"]
-            self.capture = AudioCapture(self._enqueue_audio)
+
+            # Every worker below is bound to the runtime it was started for.
+            # Reading self.stop_event / self.audio_queue per iteration instead
+            # would let a thread that outlived its session latch onto the next
+            # one's fresh (unset) event and keep running.
+            stop_event = self.stop_event
+            audio_queue = self.audio_queue
+            answer_queue = self.answer_queue
+            llm = self.llm
+            session = dict(self.session)
+
+            self.capture = AudioCapture(
+                self._make_audio_sink(runtime_id, stop_event, audio_queue)
+            )
             try:
                 self.transcriber.start()
                 self.worker_thread = threading.Thread(
-                    target=self._transcription_loop, daemon=True
+                    target=self._transcription_loop,
+                    args=(runtime_id, stop_event, audio_queue),
+                    name=f"wingman-transcribe-{runtime_id}",
+                    daemon=True,
                 )
                 self.worker_thread.start()
                 self.answer_worker_thread = threading.Thread(
-                    target=self._answer_loop, daemon=True
+                    target=self._answer_loop,
+                    args=(runtime_id, stop_event, answer_queue, llm, session),
+                    name=f"wingman-answer-{runtime_id}",
+                    daemon=True,
                 )
                 self.answer_worker_thread.start()
                 self.capture.start()
@@ -325,6 +389,9 @@ class SessionManager:
                     self.capture.stop()
                 if self.transcriber is not None:
                     self.transcriber.stop()
+                self._close_clients()
+                self.runtime_id += 1
+                stop_event.set()
                 self._reset_runtime()
                 raise
 
@@ -350,6 +417,10 @@ class SessionManager:
         }
 
     def stop_session(self) -> dict:
+        with self.lifecycle_lock:
+            return self._stop_session_locked()
+
+    def _stop_session_locked(self) -> dict:
         capture = self.capture
         transcriber = self.transcriber
         worker = self.worker_thread
@@ -368,6 +439,26 @@ class SessionManager:
             worker.join(timeout=2.5)
         if answer_worker is not None and answer_worker.is_alive():
             answer_worker.join(timeout=2.0)
+
+        # Ordering matters. Workers that finished inside the join window above
+        # have already recorded their answers, so history is still complete.
+        # Anything still running (a Groq read can block for the SDK's full
+        # timeout, far past the join) is invalidated here: every worker
+        # re-checks runtime_id before it emits, so once this increments a
+        # straggler cannot append to the next session's exchanges, broadcast a
+        # status onto a stopped session, or keep draining the answer queue.
+        if worker is not None or answer_worker is not None:
+            leaked = [
+                thread.name
+                for thread in (worker, answer_worker)
+                if thread is not None and thread.is_alive()
+            ]
+            if leaked:
+                log.warning(
+                    "Worker(s) outlived stop and were fenced off: %s", ", ".join(leaked)
+                )
+        self.runtime_id += 1
+        self._close_clients()
 
         if history_enabled:
             session_snapshot = {
@@ -458,59 +549,128 @@ class SessionManager:
     # Audio ingestion
     # ------------------------------------------------------------------
 
-    def _enqueue_audio(self, audio_chunk: bytes):
-        if self.stop_event.is_set():
-            return
-        try:
-            self.audio_queue.put_nowait(audio_chunk)
-        except queue.Full:
+    def _make_audio_sink(
+        self,
+        runtime_id: int,
+        stop_event: threading.Event,
+        audio_queue: queue.Queue,
+    ):
+        """Audio callback bound to one runtime.
+
+        The capture backends are callback-driven from a native thread, so a
+        frame can land after stop_session has already installed a fresh queue.
+        Binding the queue here means a late frame is discarded rather than fed
+        into the next session.
+        """
+
+        def sink(audio_chunk: bytes):
+            if stop_event.is_set() or self.runtime_id != runtime_id:
+                return
             try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                pass
-            self.audio_queue.put_nowait(audio_chunk)
+                audio_queue.put_nowait(audio_chunk)
+            except queue.Full:
+                try:
+                    audio_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    audio_queue.put_nowait(audio_chunk)
+                except queue.Full:
+                    pass
+
+        return sink
 
     # ------------------------------------------------------------------
     # Transcription loop
     # ------------------------------------------------------------------
 
-    def _transcription_loop(self):
-        while not self.stop_event.is_set():
-            try:
-                audio_chunk = self.audio_queue.get(timeout=0.25)
-            except queue.Empty:
-                self._flush_pending_question_if_ready()
-                continue
+    def _transcription_loop(
+        self,
+        runtime_id: int,
+        stop_event: threading.Event,
+        audio_queue: queue.Queue,
+    ):
+        try:
+            while not stop_event.is_set() and self.runtime_id == runtime_id:
+                try:
+                    audio_chunk = audio_queue.get(timeout=0.25)
+                except queue.Empty:
+                    self._guarded_flush(runtime_id)
+                    continue
 
-            try:
-                self._process_audio_chunk(audio_chunk)
-            except Exception as error:
-                print(f"[wingman] Transcription error: {error}")
+                try:
+                    self._process_audio_chunk(audio_chunk)
+                except Exception as error:
+                    log.error("Transcription error: %s", error, exc_info=True)
 
-            self._flush_pending_question_if_ready()
+                self._guarded_flush(runtime_id)
 
-        self._flush_pending_question_if_ready(force=True)
-
-    def _answer_loop(self):
-        while True:
-            if self.stop_event.is_set() and self.answer_queue.empty():
-                return
-            try:
-                prompt, local_queue = self.answer_queue.get(timeout=0.25)
-            except queue.Empty:
-                continue
-
-            runtime_id = self.runtime_id
-            stop_event = self.stop_event
-            llm = self.llm
-            session = dict(self.session)
-
-            try:
-                self._stream_answer_worker(
-                    runtime_id, stop_event, llm, session, prompt, local_queue
+            if self.runtime_id == runtime_id:
+                self._guarded_flush(runtime_id, force=True)
+        except BaseException as error:  # pragma: no cover - defensive
+            log.critical("Transcription loop died: %s", error, exc_info=True)
+            if self.runtime_id == runtime_id:
+                self._broadcast_transcript(
+                    {
+                        "type": "error",
+                        "message": "Transcription stopped unexpectedly. Restart the session.",
+                    }
                 )
-            finally:
-                self.answer_queue.task_done()
+
+    def _guarded_flush(self, runtime_id: int, force: bool = False):
+        """Flush without letting one failure end transcription for the session."""
+        try:
+            self._flush_pending_question_if_ready(force=force)
+        except Exception as error:
+            log.error("Question flush failed: %s", error, exc_info=True)
+
+    def _answer_loop(
+        self,
+        runtime_id: int,
+        stop_event: threading.Event,
+        answer_queue: queue.Queue,
+        llm: LLMClient | None,
+        session: dict,
+    ):
+        try:
+            while True:
+                # Both conditions are checked against the captured runtime, not
+                # self.stop_event, so this thread can never adopt a later
+                # session's queue or event.
+                if self.runtime_id != runtime_id:
+                    return
+                if stop_event.is_set() and answer_queue.empty():
+                    return
+                try:
+                    prompt, local_queue = answer_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+
+                try:
+                    if stop_event.is_set() or self.runtime_id != runtime_id:
+                        # Never leave a manual-answer SSE generator hanging on a
+                        # `done` that will not arrive.
+                        if local_queue is not None:
+                            local_queue.put({"type": "done"})
+                        continue
+                    self._stream_answer_worker(
+                        runtime_id, stop_event, llm, session, prompt, local_queue
+                    )
+                except Exception as error:
+                    log.error("Answer worker failed: %s", error, exc_info=True)
+                    if local_queue is not None:
+                        local_queue.put({"type": "done"})
+                finally:
+                    answer_queue.task_done()
+        except BaseException as error:  # pragma: no cover - defensive
+            log.critical("Answer loop died: %s", error, exc_info=True)
+            if self.runtime_id == runtime_id:
+                self._broadcast_answer(
+                    {
+                        "type": "error",
+                        "message": "Answer generation stopped unexpectedly. Restart the session.",
+                    }
+                )
 
     # ------------------------------------------------------------------
     # Audio to transcript
@@ -790,6 +950,11 @@ class SessionManager:
             self.status = "listening"
             self._last_enqueued_question = ""
             self._broadcast_usage(force=True)
+        elif local_queue is not None:
+            # `fan` suppresses everything once the runtime moves on, but a
+            # manual-answer SSE generator terminates on `done` and would
+            # otherwise hang until the client gives up.
+            local_queue.put({"type": "done"})
 
     # ------------------------------------------------------------------
     # Broadcast helpers

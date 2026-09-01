@@ -363,6 +363,124 @@ class MultilingualDetectionTests(unittest.TestCase):
         )
 
 
+class RuntimeFencingTests(unittest.TestCase):
+    """The worker *loops*, not just the inner workers, must respect the runtime.
+
+    The inner functions always re-checked runtime_id, but the two long-lived
+    loops read ``self.stop_event`` and ``self.answer_queue`` on every iteration.
+    Because ``_reset_runtime`` installs a *fresh, unset* event and fresh queues,
+    a loop that outlived its session (a stalled Groq read can block far past
+    stop_session's 2s join) would see the new session's unset event, keep
+    running, and race the live worker for the same questions — two Groq streams
+    interleaved token-by-token into one SSE connection, at double cost.
+    """
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.manager = SessionManager(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_stop_session_advances_the_runtime(self):
+        """This is what fences off a worker that outlived its join timeout."""
+        before = self.manager.runtime_id
+
+        self.manager.stop_session()
+
+        self.assertGreater(self.manager.runtime_id, before)
+
+    def test_answer_loop_exits_when_the_runtime_advances(self):
+        stop_event = self.manager.stop_event
+        answer_queue = self.manager.answer_queue
+        runtime_id = self.manager.runtime_id
+
+        worker = threading.Thread(
+            target=self.manager._answer_loop,
+            args=(runtime_id, stop_event, answer_queue, FakeLLM(), {}),
+            daemon=True,
+        )
+        worker.start()
+
+        # Exactly what stop_session does to a worker it could not join.
+        self.manager.runtime_id += 1
+
+        worker.join(timeout=2.0)
+        self.assertFalse(worker.is_alive(), "answer loop adopted the next runtime")
+
+    def test_a_leaked_answer_loop_does_not_consume_the_next_sessions_questions(self):
+        stale_stop_event = self.manager.stop_event
+        stale_queue = self.manager.answer_queue
+        stale_runtime = self.manager.runtime_id
+
+        worker = threading.Thread(
+            target=self.manager._answer_loop,
+            args=(stale_runtime, stale_stop_event, stale_queue, FakeLLM(), {}),
+            daemon=True,
+        )
+        worker.start()
+
+        # A new session: fresh runtime, fresh unset event, fresh queue.
+        self.manager.runtime_id += 1
+        self.manager._reset_runtime()
+        worker.join(timeout=2.0)
+        self.assertFalse(worker.is_alive())
+
+        self.manager.answer_queue.put_nowait(("New session question", None))
+        time.sleep(0.4)
+
+        # The straggler must not have drained it.
+        self.assertEqual(
+            self.manager.answer_queue.get_nowait(), ("New session question", None)
+        )
+
+    def test_transcription_loop_exits_when_the_runtime_advances(self):
+        stop_event = self.manager.stop_event
+        audio_queue = self.manager.audio_queue
+        runtime_id = self.manager.runtime_id
+
+        worker = threading.Thread(
+            target=self.manager._transcription_loop,
+            args=(runtime_id, stop_event, audio_queue),
+            daemon=True,
+        )
+        worker.start()
+
+        self.manager.runtime_id += 1
+
+        worker.join(timeout=2.0)
+        self.assertFalse(worker.is_alive(), "transcription loop adopted the next runtime")
+
+    def test_audio_from_a_stopped_session_is_dropped(self):
+        runtime_id = self.manager.runtime_id
+        audio_queue = self.manager.audio_queue
+        sink = self.manager._make_audio_sink(
+            runtime_id, self.manager.stop_event, audio_queue
+        )
+
+        sink(b"\x00\x01")
+        self.assertEqual(audio_queue.qsize(), 1)
+
+        # A native capture callback can fire after the session is torn down.
+        self.manager.runtime_id += 1
+        sink(b"\x02\x03")
+
+        self.assertEqual(audio_queue.qsize(), 1)
+
+    def test_a_dropped_manual_answer_still_terminates_its_stream(self):
+        """A manual-answer SSE generator ends on `done` and would otherwise hang."""
+        stop_event = self.manager.stop_event
+        answer_queue = self.manager.answer_queue
+        runtime_id = self.manager.runtime_id
+        local_queue: queue.Queue = queue.Queue()
+
+        stop_event.set()
+        answer_queue.put_nowait(("Dropped prompt", local_queue))
+
+        self.manager._answer_loop(runtime_id, stop_event, answer_queue, FakeLLM(), {})
+
+        self.assertEqual(local_queue.get_nowait(), {"type": "done"})
+
 
 if __name__ == "__main__":
     unittest.main()

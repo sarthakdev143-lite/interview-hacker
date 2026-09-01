@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -107,7 +106,8 @@ class AudioCapture:
         self.stream = None
         self.audio_interface = None
         self.running = False
-        self.worker: Optional[threading.Thread] = None
+        # Both backends are callback-driven from a native thread, so there is
+        # no polling loop to run here.
         self.stop_event = threading.Event()
         self.sample_rate = 16000
         self.channels = 1
@@ -153,10 +153,6 @@ class AudioCapture:
                 pass
             self.audio_interface = None
 
-        if self.worker is not None and self.worker.is_alive():
-            self.worker.join(timeout=1.5)
-        self.worker = None
-
     def _start_windows(self):
         try:
             import pyaudiowpatch as pyaudio  # type: ignore
@@ -192,8 +188,6 @@ class AudioCapture:
             stream_callback=callback,
         )
         self.stream.start_stream()
-        self.worker = threading.Thread(target=self._spin_stream, daemon=True)
-        self.worker.start()
 
     def _start_sounddevice(self):
         if sd is None:
@@ -231,12 +225,6 @@ class AudioCapture:
             callback=callback,
         )
         self.stream.start()
-        self.worker = threading.Thread(target=self._spin_stream, daemon=True)
-        self.worker.start()
-
-    def _spin_stream(self):
-        while self.running and not self.stop_event.is_set():
-            time.sleep(0.1)
 
     def _normalize_chunk(self, audio_chunk: bytes) -> bytes:
         if not audio_chunk:

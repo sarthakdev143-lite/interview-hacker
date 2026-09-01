@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+import httpx
 from groq import Groq
 
 from wingman_logging import get_logger, redact
@@ -81,7 +82,21 @@ LLM_MAX_ATTEMPTS = 3
 LLM_RETRY_BACKOFF_SECONDS = (1.0, 3.0)
 # Nobody waits half a minute mid-interview; past this, move on and say so.
 MAX_RETRY_WAIT_SECONDS = 10.0
-RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+# 409 (conflict) and 425 (too early) are not usefully retryable for a
+# completions call — retrying them only buys three wasted round trips.
+RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+# The Groq SDK retries internally (default max_retries=2) with its own backoff
+# *inside* the call, which would multiply this module's LLM_MAX_ATTEMPTS into up
+# to nine HTTP attempts and sleep for far longer than MAX_RETRY_WAIT_SECONDS.
+# Retries are this module's job, because only it can report them to the UI and
+# fall back to a sibling model.
+SDK_MAX_RETRIES = 0
+# The SDK default read timeout is 60s. A stream that has not produced a token in
+# 20s is already useless in a live interview, and the long timeout is what lets
+# an answer worker outlive its session.
+CONNECT_TIMEOUT_SECONDS = 5.0
+READ_TIMEOUT_SECONDS = 20.0
 
 # (model, prompt_tokens, completion_tokens)
 UsageCallback = Callable[[str, int, int], None]
@@ -188,12 +203,26 @@ class LLMClient:
         classifier_model: str | None = None,
         on_retry: RetryCallback | None = None,
     ):
-        self.client = Groq(api_key=api_key)
+        self.client = Groq(
+            api_key=api_key,
+            max_retries=SDK_MAX_RETRIES,
+            timeout=httpx.Timeout(
+                READ_TIMEOUT_SECONDS,
+                connect=CONNECT_TIMEOUT_SECONDS,
+            ),
+        )
         self.default_model = answer_model or DEFAULT_ANSWER_MODEL
         self.classifier_model = classifier_model or DEFAULT_CLASSIFIER_MODEL
         self.on_usage = on_usage
         self.on_retry = on_retry
         self.available_models: list[str] = []
+
+    def close(self) -> None:
+        """Release the underlying httpx connection pool."""
+        try:
+            self.client.close()
+        except Exception as error:  # pragma: no cover - defensive
+            log.debug("Groq client close failed: %s", error)
 
     # ------------------------------------------------------------------
     # Model resolution

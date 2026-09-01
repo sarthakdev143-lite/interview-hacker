@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
 from urllib.parse import urlencode
 
+import httpx
 import websocket
 from groq import Groq
 
@@ -46,6 +47,9 @@ CONTEXT_SEGMENTS = 2
 
 TRANSCRIBE_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (0.6, 1.8)
+# A Whisper call on a bounded utterance either lands in about half a second or
+# is not going to. The SDK's 60s default is what let requests outlive sessions.
+TRANSCRIBE_TIMEOUT_SECONDS = 15.0
 RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
 
 # Whisper hallucinates stock phrases on near-silent audio. These are dropped.
@@ -107,7 +111,15 @@ class GroqTranscriber:
         if not api_key:
             raise ValueError("A Groq API key is required for transcription.")
 
-        self.client = Groq(api_key=api_key)
+        # Retries are handled below, where they can be aborted on stop_event.
+        # The SDK's own 60s read timeout is what lets a request outlive its
+        # session; a Whisper call on a bounded utterance has no business
+        # running that long.
+        self.client = Groq(
+            api_key=api_key,
+            max_retries=0,
+            timeout=httpx.Timeout(TRANSCRIBE_TIMEOUT_SECONDS, connect=5.0),
+        )
         self.on_transcript = on_transcript
         self.on_usage = on_usage
         self.on_activity = on_activity
@@ -171,6 +183,13 @@ class GroqTranscriber:
             # Requests already in flight are abandoned; the session is over and
             # their transcripts would arrive after the UI has reset.
             executor.shutdown(wait=False, cancel_futures=True)
+
+    def close(self) -> None:
+        """Release the httpx connection pool. Safe to call after stop()."""
+        try:
+            self.client.close()
+        except Exception as error:  # pragma: no cover - defensive
+            log.debug("Transcriber client close failed: %s", error)
 
     def feed(self, audio_chunk: bytes) -> None:
         if not audio_chunk or self.stop_event.is_set():
@@ -265,6 +284,13 @@ class GroqTranscriber:
                     break
                 time.sleep(RETRY_BACKOFF_SECONDS[min(attempt, len(RETRY_BACKOFF_SECONDS) - 1)])
                 continue
+
+            # Checked after the response, not before the request: an in-flight
+            # request from a session that has since stopped would otherwise
+            # report its seconds into the *next* session's usage tracker, which
+            # _reset_runtime has already replaced.
+            if self.stop_event.is_set():
+                return ""
 
             if self.on_usage is not None:
                 self.on_usage(utterance.seconds)

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { submitManualAnswer } from '../lib/backend';
 import type {
   AnswerEventPayload,
   SessionStatus,
@@ -206,18 +207,7 @@ export function useStream(
     setStatus('thinking');
     setAnswer('');
 
-    const response = await fetch(`http://127.0.0.1:${serverPort}/answer/manual`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(serverToken ? { 'X-Wingman-Token': serverToken } : {}),
-      },
-      body: JSON.stringify({ prompt }),
-    });
-
-    if (!response.ok) {
-      throw new Error((await response.text()) || 'Manual answer request failed.');
-    }
+    await submitManualAnswer(serverPort, serverToken, prompt);
   }
 
   return {

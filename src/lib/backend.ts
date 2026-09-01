@@ -46,12 +46,31 @@ export async function uploadResume(port: number, token: string | null, file: Fil
   });
 
   if (!response.ok) {
-    throw new Error((await response.text()) || 'Resume upload failed.');
+    throw new Error(await readError(response, 'Resume upload failed.'));
   }
 
   return (await response.json()) as { resume_text: string };
 }
 
+/**
+ * Fire a manual question. The tokens come back on the shared `/answer/stream`
+ * SSE connection, so this only needs to report whether the request was accepted.
+ */
+export async function submitManualAnswer(
+  port: number,
+  token: string | null,
+  prompt: string,
+) {
+  const response = await fetch(`${getServerBaseUrl(port)}/answer/manual`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+    body: JSON.stringify({ prompt }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readError(response, 'Manual answer request failed.'));
+  }
+}
 
 export interface HistoryPage {
   sessions: SessionHistoryRecord[];

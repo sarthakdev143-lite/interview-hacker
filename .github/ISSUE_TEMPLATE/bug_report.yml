@@ -1,0 +1,102 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report.
+
+        **Security issues do not belong here** — please follow
+        [SECURITY.md](https://github.com/sarthakdev143-lite/interview-hacker/blob/master/SECURITY.md)
+        and report privately instead.
+
+        **Before you paste logs:** transcript text is hash-redacted by default,
+        but if you set `WINGMAN_LOG_TRANSCRIPTS=1` your log contains real
+        interview content. Check before attaching it to a public issue.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a session with provider X
+        2. Say "tell me about yourself"
+        3. Overlay shows ...
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: WingMan version
+      description: From the installer filename, or `package.json` if running from source.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How are you running it?
+      options:
+        - Packaged installer (.exe)
+        - From source (npm run dev)
+        - Packaged build from repo dir (release/win-unpacked)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      description: On Windows, run `winver`. The WASAPI loopback path behaves differently before build 22621.
+      placeholder: Windows 11 23H2 (22631.4317) / macOS 14.5 / Ubuntu 24.04 + PipeWire
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Transcription provider
+      options:
+        - groq (default)
+        - deepgram
+        - Not applicable / did not get that far
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Answer model
+      description: Model IDs are resolved at runtime, so the one you picked may have been substituted. Any `notice` shown in the UI is useful here.
+      placeholder: openai/gpt-oss-120b
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Relevant lines from `wingman.log` and `wingman-python.log` in your
+        `userData` directory. On Windows that is
+        `%APPDATA%\WingMan\`.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for a duplicate
+          required: true
+        - label: I have removed any API keys and interview content from what I pasted
+          required: true

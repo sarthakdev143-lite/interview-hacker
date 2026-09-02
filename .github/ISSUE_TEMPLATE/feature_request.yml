@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you hit, not just the feature you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the app?
+      options:
+        - Audio capture / VAD
+        - Transcription (Groq / Deepgram)
+        - Question detection
+        - LLM answers / prompting
+        - Overlay UI
+        - Dashboard UI
+        - Packaging / installers
+        - macOS or Linux support
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: latency
+    attributes:
+      label: Latency impact
+      description: |
+        End-of-question to first answer token is ~800 ms and it is the number
+        that decides whether the app is usable live. If your proposal touches
+        the audio → answer path, say what it costs.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for a duplicate
+          required: true

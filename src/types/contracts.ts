@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 export type OverlayPreset =
   | 'bottom-right'
   | 'bottom-left'

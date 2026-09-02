@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 

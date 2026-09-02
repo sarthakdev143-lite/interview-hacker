@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { safeStorage } from 'electron';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

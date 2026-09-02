@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { readDevServerConfig } from './devServerConfig.mjs';

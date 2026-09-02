@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { useState } from 'react';
 import { formatDate, formatDuration } from '../lib/format';
 import type { SessionHistoryRecord } from '../types/contracts';

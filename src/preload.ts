@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AppState,

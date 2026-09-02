@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { BrowserWindow, screen } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';

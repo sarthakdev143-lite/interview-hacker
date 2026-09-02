@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { useRef } from 'react';
 import type { TranscriptLine } from '../hooks/useStream';
 import type { SessionDraft } from '../hooks/useSession';

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { createServer } from 'node:net';
 import { writeFile } from 'node:fs/promises';
 import { DEV_SERVER_CONFIG_PATH } from './devServerConfig.mjs';

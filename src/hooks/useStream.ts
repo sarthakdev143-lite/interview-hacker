@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Sarthak Parulekar
+// SPDX-License-Identifier: MIT
+
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { submitManualAnswer } from '../lib/backend';
 import type {

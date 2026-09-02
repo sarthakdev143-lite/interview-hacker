@@ -49,11 +49,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sarthakdev143-lite/interview-hacker.git"
+    "url": "git+https://github.com/sarthakdev143-lite/wingman.git"
   },
-  "homepage": "https://github.com/sarthakdev143-lite/interview-hacker#readme",
+  "homepage": "https://github.com/sarthakdev143-lite/wingman#readme",
   "bugs": {
-    "url": "https://github.com/sarthakdev143-lite/interview-hacker/issues"
+    "url": "https://github.com/sarthakdev143-lite/wingman/issues"
   },
   "engines": {
     "node": ">=18.0.0"

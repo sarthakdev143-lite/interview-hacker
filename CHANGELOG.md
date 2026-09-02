@@ -104,9 +104,9 @@ below are reconstructed from the commit history.
 Initial tagged build: system audio capture, transcription, question detection,
 streamed answers and the capture-protected overlay.
 
-[Unreleased]: https://github.com/sarthakdev143-lite/interview-hacker/compare/v0.0.5-alpha...HEAD
-[0.0.5-alpha]: https://github.com/sarthakdev143-lite/interview-hacker/compare/v0.0.4-beta...v0.0.5-alpha
-[0.0.4-beta]: https://github.com/sarthakdev143-lite/interview-hacker/compare/v0.0.3-alpha...v0.0.4-beta
-[0.0.3-alpha]: https://github.com/sarthakdev143-lite/interview-hacker/compare/v0.0.2-alpha...v0.0.3-alpha
-[0.0.2-alpha]: https://github.com/sarthakdev143-lite/interview-hacker/compare/v0.0.1-alpha...v0.0.2-alpha
-[0.0.1-alpha]: https://github.com/sarthakdev143-lite/interview-hacker/releases/tag/v0.0.1-alpha
+[Unreleased]: https://github.com/sarthakdev143-lite/wingman/compare/v0.0.5-alpha...HEAD
+[0.0.5-alpha]: https://github.com/sarthakdev143-lite/wingman/compare/v0.0.4-beta...v0.0.5-alpha
+[0.0.4-beta]: https://github.com/sarthakdev143-lite/wingman/compare/v0.0.3-alpha...v0.0.4-beta
+[0.0.3-alpha]: https://github.com/sarthakdev143-lite/wingman/compare/v0.0.2-alpha...v0.0.3-alpha
+[0.0.2-alpha]: https://github.com/sarthakdev143-lite/wingman/compare/v0.0.1-alpha...v0.0.2-alpha
+[0.0.1-alpha]: https://github.com/sarthakdev143-lite/wingman/releases/tag/v0.0.1-alpha

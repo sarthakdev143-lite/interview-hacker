@@ -9,8 +9,8 @@ By contributing you agree your work is licensed under the [MIT License](LICENSE)
 ## Setup
 
 ```bash
-git clone https://github.com/sarthakdev143-lite/interview-hacker.git
-cd interview-hacker
+git clone https://github.com/sarthakdev143-lite/wingman.git
+cd wingman
 npm install
 
 # The app spawns this venv directly — .venv/Scripts/python.exe on Windows,

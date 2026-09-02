@@ -5,7 +5,7 @@
 **Do not open a public issue for a security vulnerability.**
 
 Report it privately through
-[GitHub Security Advisories](https://github.com/sarthakdev143-lite/interview-hacker/security/advisories/new),
+[GitHub Security Advisories](https://github.com/sarthakdev143-lite/wingman/security/advisories/new),
 or by email to **sarthakdev143.official@gmail.com** with `[SECURITY]` in the
 subject.
 

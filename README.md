@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sarthakdev143-lite/interview-hacker/releases"><img src="https://img.shields.io/github/v/release/sarthakdev143-lite/interview-hacker?include_prereleases&style=flat-square&color=0ea5e9" alt="Release" /></a>
+  <a href="https://github.com/sarthakdev143-lite/wingman/releases"><img src="https://img.shields.io/github/v/release/sarthakdev143-lite/wingman?include_prereleases&style=flat-square&color=0ea5e9" alt="Release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-34d399?style=flat-square" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%E1%B5%97%20%7C%20Linux%E1%B5%97-blue?style=flat-square" alt="Platform" />
   <img src="https://img.shields.io/badge/electron-41.x-47848F?style=flat-square&logo=electron" alt="Electron" />
@@ -164,7 +164,7 @@ On Windows, health reports `capture_warning` on builds older than `10.0.22621`
 ## 📥 Installation (end users)
 
 Grab the file for your platform from the
-[Releases](https://github.com/sarthakdev143-lite/interview-hacker/releases)
+[Releases](https://github.com/sarthakdev143-lite/wingman/releases)
 page.
 
 **Windows** — run `WingMan-<version>-setup.exe`. SmartScreen will show
@@ -213,8 +213,8 @@ monitor source enabled.
 
 ```bash
 # Clone
-git clone https://github.com/sarthakdev143-lite/interview-hacker.git
-cd interview-hacker
+git clone https://github.com/sarthakdev143-lite/wingman.git
+cd wingman
 
 # Node deps
 npm install
@@ -314,7 +314,7 @@ Python tests drive `SessionManager` through its private methods (`_publish_trans
 ## 📁 Project Structure
 
 ```
-interview-hacker/
+wingman/
 ├─ src/
 │  ├─ main.ts                 # AppState, PythonServerManager, IPC, shortcuts
 │  ├─ windowManager.ts        # dashboard + overlay windows, hardenWindow()

@@ -308,14 +308,25 @@ export class PythonServerManager {
       return { command: override, args: ['-u', serverScript] };
     }
 
-    if (process.platform === 'win32') {
-      return {
-        command: path.join(process.cwd(), '.venv', 'Scripts', 'python.exe'),
-        args: ['-u', serverScript],
-      };
+    // The venv layout differs by platform: Scripts/python.exe on Windows,
+    // bin/python everywhere else. Only the Windows branch used to exist, so on
+    // macOS and Linux this fell through to a bare `python3` — the interpreter
+    // on PATH, which does not have flask/groq/numpy installed. That made the
+    // documented setup (create .venv, pip install -r) fail at import with no
+    // hint as to why. Fall back to `python3` only when there is no venv.
+    const venvPython =
+      process.platform === 'win32'
+        ? path.join(process.cwd(), '.venv', 'Scripts', 'python.exe')
+        : path.join(process.cwd(), '.venv', 'bin', 'python');
+
+    if (existsSync(venvPython)) {
+      return { command: venvPython, args: ['-u', serverScript] };
     }
 
-    return { command: 'python3', args: ['-u', serverScript] };
+    return {
+      command: process.platform === 'win32' ? venvPython : 'python3',
+      args: ['-u', serverScript],
+    };
   }
 
   async request<T>(route: string, init?: RequestInit): Promise<T> {

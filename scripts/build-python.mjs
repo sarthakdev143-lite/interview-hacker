@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,13 +12,37 @@ const buildDir = path.join(pythonDir, 'build');
 const specFile = path.join(pythonDir, 'wingman-server.spec');
 
 // Resolve the Python executable.
+//
+// This has to be the *same* interpreter the project's dependencies were
+// installed into, because PyInstaller bundles what it can import. It used to
+// resolve to `py -3` on Windows and `python3` elsewhere — the system
+// interpreter — so packaging only worked if PyInstaller, flask, groq and
+// numpy had all been installed globally, which is exactly what the venv in
+// the README exists to avoid. Prefer the venv and fall back to the system
+// interpreter only when there isn't one.
+//
 // Using `shell: false` so that args with spaces are passed as-is to the
 // process (no shell word-splitting on paths like "My Codes/...").
-const command =
-  process.env.WINGMAN_PYTHON_BIN ??
-  (process.platform === 'win32' ? 'py' : 'python3');
-const prefixArgs =
-  process.env.WINGMAN_PYTHON_BIN || process.platform !== 'win32' ? [] : ['-3'];
+const venvPython =
+  process.platform === 'win32'
+    ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
+    : path.join(repoRoot, '.venv', 'bin', 'python');
+
+let command;
+let prefixArgs = [];
+
+if (process.env.WINGMAN_PYTHON_BIN) {
+  command = process.env.WINGMAN_PYTHON_BIN;
+} else if (existsSync(venvPython)) {
+  command = venvPython;
+} else if (process.platform === 'win32') {
+  command = 'py';
+  prefixArgs = ['-3'];
+} else {
+  command = 'python3';
+}
+
+console.log(`Building Python sidecar with: ${command}`);
 
 const args = [
   ...prefixArgs,

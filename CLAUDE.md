@@ -20,7 +20,7 @@ npm run dev            # predev picks a free port -> .dev-server.json, then runs
                        # renderer + main watch + preload watch + electron concurrently
 npm run typecheck      # tsc --noEmit
 npm run lint           # eslint --ext .ts,.tsx .
-npm run test:python    # python python/tests/test_session_manager.py
+npm run test:python    # node scripts/run-python-tests.mjs (uses .venv, not PATH python)
 npm run verify         # typecheck + lint + test:python
 npm run build          # vite builds renderer / main / preload into dist/
 npm run package        # verify -> build -> PyInstaller sidecar -> electron-builder -> release/
@@ -153,4 +153,5 @@ API keys never cross to the renderer, so anything needing one is a control-plane
 - The Python tests drive `SessionManager` through its private methods (`_publish_transcript`, `_flush_pending_question_if_ready`, `_yield_queue`, `_on_transcript`) and a `FakeTranscriber` mirroring `start`/`stop`/`feed`. Renaming those breaks the suite even when behaviour is unchanged.
 - `python/wingman-server.spec` lists `hiddenimports` explicitly — a new runtime-only Python dependency needs adding there or the packaged exe fails at import time.
 - Dev mode depends on `.dev-server.json` (written by `scripts/select-dev-port.mjs`, gitignored). `scripts/launch-electron.mjs` passes its URL as `VITE_DEV_SERVER_URL`, and both main.ts and windowManager.ts use that variable to decide whether a URL is trusted. Nodemon watches `dist/main` and `dist/preload`, so an Electron restart only happens after the vite watch build lands.
-- Licensing headers on the main source files say **MIT + Commons Clause (commercial use prohibited)**, matching `LICENSE` and `package.json`'s `"license": "SEE LICENSE IN LICENSE"`. Keep the header when adding files that carry one, and never revert `package.json`'s license field back to a bare `"MIT"` — that would misrepresent the actual grant.
+- The project is **MIT** (`LICENSE`, `package.json` `"license": "MIT"`), and source files carry a two-line `Copyright` + `SPDX-License-Identifier: MIT` header. Keep the header when adding files that carry one. It was previously "MIT + Commons Clause", which was neither MIT nor a valid application of the Commons Clause — do not reintroduce a non-commercial restriction without also fixing every header, the README, and the fact that it would make the project source-available rather than open source.
+- **Bundled fonts are OFL, not MIT.** `src/assets/fonts/` holds Space Grotesk and IBM Plex Mono woff2 subsets under the SIL Open Font License 1.1, with their own `LICENSE` file. They are bundled rather than fetched from Google because the renderer CSP (`style-src 'self'`) blocks the `@import`, and because a desktop app should not need Google reachable mid-interview.

@@ -23,12 +23,39 @@
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": [],
+  "keywords": [
+    "electron",
+    "interview-assistant",
+    "meeting-assistant",
+    "real-time-transcription",
+    "speech-to-text",
+    "groq",
+    "whisper",
+    "llm",
+    "overlay",
+    "screen-capture-protection",
+    "system-audio",
+    "wasapi-loopback",
+    "react",
+    "python",
+    "flask"
+  ],
   "author": {
     "name": "Sarthak Parulekar",
     "email": "sarthakdev143.official@gmail.com"
   },
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sarthakdev143-lite/interview-hacker.git"
+  },
+  "homepage": "https://github.com/sarthakdev143-lite/interview-hacker#readme",
+  "bugs": {
+    "url": "https://github.com/sarthakdev143-lite/interview-hacker/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "devDependencies": {
     "@types/node": "^22.16.5",
     "@types/react": "^18.3.18",

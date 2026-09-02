@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Sarthak Parulekar
-// Licensed under MIT + Commons Clause — commercial use prohibited.
+// SPDX-License-Identifier: MIT
 
 /**
  * Runs the Python test suite with the interpreter that actually has the

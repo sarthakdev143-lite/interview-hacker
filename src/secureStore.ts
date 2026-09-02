@@ -135,9 +135,20 @@ export class SecureStore {
     // Write-then-rename. A direct write that is interrupted (power loss, a full
     // disk) leaves a truncated file, and the recovery path above cannot tell a
     // truncated file from a missing one.
+    //
+    // mode 0o600 because the default is 0o666 & ~umask, i.e. 0o644 on a typical
+    // POSIX box — world-readable. The API keys inside are safeStorage
+    // ciphertext rather than plaintext, but there is no reason to hand every
+    // local account the ciphertext and the chance to tamper with it. The mode
+    // is set on the temp file so the window between create and rename is not
+    // itself readable; it is ignored on Windows, where the ACL inherited from
+    // userData already governs access.
     const tempPath = `${this.filePath}.${process.pid}.tmp`;
     try {
-      await fs.writeFile(tempPath, JSON.stringify(next, null, 2), 'utf8');
+      await fs.writeFile(tempPath, JSON.stringify(next, null, 2), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
       await fs.rename(tempPath, this.filePath);
     } catch (error) {
       await fs.rm(tempPath, { force: true }).catch(() => undefined);

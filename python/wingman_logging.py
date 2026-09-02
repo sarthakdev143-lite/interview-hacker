@@ -36,6 +36,32 @@ _configured = False
 _lock_message = "[wingman] logging is configured once per process"
 
 
+def restrict_permissions(path: Path, mode: int) -> None:
+    """Best-effort ``chmod`` that never takes the caller down with it.
+
+    POSIX creates files as ``0o666 & ~umask`` and directories as
+    ``0o777 & ~umask``, which normally means 0o644/0o755 — readable by every
+    local account. This app writes API-key ciphertext, diagnostic logs and
+    plaintext interview transcripts, none of which other users need.
+
+    ``chmod`` is a no-op on Windows for anything but the read-only bit, and can
+    fail on exotic or network filesystems. Neither case is worth aborting a
+    session for, so failures are swallowed: the caller has already decided the
+    write itself must succeed.
+    """
+    if os.name == "nt":
+        return
+
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+# Internal alias so the logging setup below reads consistently with callers.
+_restrict_permissions = restrict_permissions
+
+
 def _log_transcripts_enabled() -> bool:
     return os.environ.get("WINGMAN_LOG_TRANSCRIPTS", "").strip().lower() in {
         "1",
@@ -89,12 +115,21 @@ def configure_logging() -> None:
 
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / LOG_FILE_NAME
         file_handler = RotatingFileHandler(
-            log_dir / LOG_FILE_NAME,
+            log_path,
             maxBytes=MAX_LOG_BYTES,
             backupCount=LOG_BACKUP_COUNT,
             encoding="utf-8",
         )
+        # The default is 0o666 & ~umask, so on a typical POSIX box the log is
+        # world-readable. Even redacted it records session timing and model
+        # errors, and under WINGMAN_LOG_TRANSCRIPTS=1 it holds real interview
+        # text. Both the directory and the current file are tightened; rotated
+        # backups inherit the mode because logging renames rather than recreates.
+        # A no-op on Windows, where the userData ACL already governs access.
+        _restrict_permissions(log_dir, 0o700)
+        _restrict_permissions(log_path, 0o600)
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
     except OSError as error:

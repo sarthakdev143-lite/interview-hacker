@@ -16,7 +16,7 @@ from audio_capture import AudioCapture
 from llm import LLMClient, is_rate_limit
 from transcriber import DEFAULT_STT_MODEL, create_transcriber
 from usage import UsageTracker
-from wingman_logging import get_logger, redact
+from wingman_logging import get_logger, redact, restrict_permissions
 
 log = get_logger("session")
 
@@ -216,6 +216,8 @@ class SessionManager:
     def __init__(self, history_dir: str):
         self.history_dir = Path(history_dir)
         self.history_dir.mkdir(parents=True, exist_ok=True)
+        # Holds plaintext transcripts of every saved session.
+        restrict_permissions(self.history_dir, 0o700)
         self.transcript_subscribers: set[queue.Queue] = set()
         self.answer_subscribers: set[queue.Queue] = set()
         self.state_lock = threading.Lock()
@@ -1168,6 +1170,10 @@ class SessionManager:
         )
         try:
             file_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+            # The most sensitive thing this app writes: a verbatim, unencrypted
+            # record of the questions asked and the answers given. Default file
+            # creation leaves it world-readable on POSIX.
+            restrict_permissions(file_path, 0o600)
         except OSError as error:
             log.error("Could not write history for %s: %s", session_id, error)
             self._broadcast_transcript(

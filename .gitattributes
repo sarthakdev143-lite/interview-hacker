@@ -1,0 +1,28 @@
+# Normalise line endings so contributors on different platforms do not produce
+# whole-file diffs. Without this, `git diff` warns about CRLF conversion on
+# every file that was committed from a Windows checkout.
+* text=auto eol=lf
+
+# Windows-only tooling that must keep CRLF to run.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary — never touch, never diff as text.
+*.png    binary
+*.ico    binary
+*.icns   binary
+*.woff2  binary
+*.woff   binary
+*.ttf    binary
+*.otf    binary
+*.pdf    binary
+*.exe    binary
+*.dll    binary
+*.wav    binary
+*.mp3    binary
+
+# Keep generated noise out of PR diffs and language stats.
+package-lock.json  linguist-generated=true -diff
+dist/**            linguist-generated=true
+release/**         linguist-generated=true

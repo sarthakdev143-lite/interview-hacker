@@ -1,0 +1,9 @@
+# Maps the several git identities used across this history onto one person, so
+# `git shortlog -sne`, `git blame` and GitHub's contributor graph agree.
+#
+# Commits were made from more than one machine, each with its own `git config
+# user.*`, which is why the same author appears under different names and
+# addresses.
+
+Sarthak Parulekar <sarthakdev143.official@gmail.com> <142305614+sarthakdev143-lite@users.noreply.github.com>
+Sarthak Parulekar <sarthakdev143.official@gmail.com> sarthakdev143-lite <sarthakdev143.official@gmail.com>

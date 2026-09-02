@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Sarthak Parulekar
-// Licensed under MIT + Commons Clause — commercial use prohibited.
+// SPDX-License-Identifier: MIT
 
 import {
   app,
@@ -13,6 +13,7 @@ import 'dotenv/config';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { contentSecurityPolicy } from './csp';
 import { getDevServerOrigin } from './devServer';
 import {
   PythonServerManager,
@@ -73,60 +74,18 @@ if (process.platform === 'win32') {
 // Pins the renderer sandbox rather than depending on the Electron default.
 app.enableSandbox();
 
-/**
- * Content-Security-Policy for the renderer.
- *
- * The renderer holds the sidecar token and the full preload bridge, so an
- * injected script — from a dependency, or from markdown rendered into an
- * answer — would have everything it needs. There was no CSP at all before this.
- *
- * `connect-src` is the interesting one: the data plane talks directly to the
- * Flask sidecar on an *ephemeral* loopback port, so the port cannot be pinned,
- * but the host can. `style-src` needs 'unsafe-inline' because Tailwind's
- * runtime injects style tags; scripts do not, so `script-src` stays strict.
- */
-function contentSecurityPolicy() {
-  const devOrigin = getDevServerOrigin();
-  const scriptSrc = devOrigin
-    ? // Vite's HMR client is eval-based; this branch is unreachable in a
-      // packaged build because getDevServerOrigin() returns null there.
-      `'self' 'unsafe-inline' 'unsafe-eval' ${devOrigin}`
-    : `'self'`;
-  const connectSrc = [
-    `'self'`,
-    'http://127.0.0.1:*',
-    'ws://127.0.0.1:*',
-    devOrigin ?? '',
-    devOrigin ? devOrigin.replace(/^http/, 'ws') : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  return [
-    `default-src 'none'`,
-    `script-src ${scriptSrc}`,
-    `style-src 'self' 'unsafe-inline'`,
-    `img-src 'self' data: blob:`,
-    `font-src 'self' data:`,
-    `connect-src ${connectSrc}`,
-    `media-src 'none'`,
-    `object-src 'none'`,
-    `frame-src 'none'`,
-    `worker-src 'self' blob:`,
-    `base-uri 'none'`,
-    `form-action 'none'`,
-    `frame-ancestors 'none'`,
-  ].join('; ');
-}
-
 function installSessionSecurity() {
   const defaultSession = session.defaultSession;
 
+  // Only reaches the renderer in dev, where it loads over http. The packaged
+  // build loads over file://, which has no response headers — that path is
+  // covered by the <meta http-equiv> tag baked into index.html at build time.
+  // See src/csp.ts.
   defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': [contentSecurityPolicy()],
+        'Content-Security-Policy': [contentSecurityPolicy(getDevServerOrigin())],
         'X-Content-Type-Options': ['nosniff'],
       },
     });

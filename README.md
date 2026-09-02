@@ -134,16 +134,19 @@ Answers add roughly $0.001–0.01 per interview depending on model. The dashboar
 
 ## 💻 Platform support
 
-| Platform | Install | Audio capture | Overlay hidden from capture |
+| Platform | Download | Audio capture | Overlay hidden from capture |
 |---|---|---|---|
-| **Windows 10/11** | Prebuilt installer | WASAPI loopback via `pyaudiowpatch` — no extra setup | Yes — `WDA_EXCLUDEFROMCAPTURE` |
-| **macOS** | Run from source | Needs a virtual device ([BlackHole](https://github.com/ExistentialAudio/BlackHole) + a Multi-Output Device) | Yes — `setContentProtection` |
-| **Linux** | Run from source | PulseAudio/PipeWire `.monitor` source via `sounddevice` | X11 only, best-effort; **not on Wayland** |
+| **Windows 10/11** | `.exe` installer | WASAPI loopback via `pyaudiowpatch` — no extra setup | Yes — `WDA_EXCLUDEFROMCAPTURE` |
+| **macOS 11+** | `.dmg` (arm64 and x64) | Needs a virtual device — [BlackHole](https://github.com/ExistentialAudio/BlackHole) plus a Multi-Output Device | Yes — `setContentProtection` |
+| **Linux** | `.AppImage` / `.deb` (x64) | PulseAudio/PipeWire `.monitor` source via `sounddevice` | X11 only, best-effort; **not under Wayland** |
 
-Windows is the only platform with a packaged build and the only one routinely
-tested. The Python and Electron layers are genuinely cross-platform — macOS and
-Linux work from source — but `electron-builder.yml` has no `mac:`/`linux:`
-targets yet. Contributions welcome.
+All three are built and published by CI. **Windows is the only one routinely
+tested in a real interview** — macOS and Linux builds are produced from the
+same source and pass the same gate, but they get far less use, so treat them as
+beta and please report what breaks.
+
+Every build is **unsigned**. See [Installation](#-installation-end-users) for
+the SmartScreen and Gatekeeper prompts that follow from that.
 
 On Windows, health reports `capture_warning` on builds older than `10.0.22621`
 (`python/server.py:health`).
@@ -160,18 +163,32 @@ On Windows, health reports `capture_warning` on builds older than `10.0.22621`
 
 ## 📥 Installation (end users)
 
-1. Download the latest `WingMan-<version>-setup.exe` from the
-   [Releases](https://github.com/sarthakdev143-lite/interview-hacker/releases)
-   page
-2. Run the installer — you can choose the install location
-3. Launch **WingMan** from the Start menu or desktop shortcut
+Grab the file for your platform from the
+[Releases](https://github.com/sarthakdev143-lite/interview-hacker/releases)
+page.
 
-> Releases are **unsigned**, so Windows SmartScreen will show
-> *"Windows protected your PC"*. Click **More info → Run anyway**, or build
-> from source if you would rather not.
+**Windows** — run `WingMan-<version>-setup.exe`. SmartScreen will show
+*"Windows protected your PC"*; click **More info → Run anyway**.
 
-macOS and Linux users: follow [Development](#️-development) below and run
-`npm run dev`.
+**macOS** — open `WingMan-<version>-arm64.dmg` (Apple silicon) or `-x64.dmg`
+(Intel) and drag the app to Applications. Gatekeeper will refuse it on first
+launch, so **right-click the app and choose Open**, or run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/WingMan.app
+```
+
+Then install [BlackHole](https://github.com/ExistentialAudio/BlackHole) and
+create a Multi-Output Device, or there is no system audio to capture.
+
+**Linux** — `chmod +x WingMan-<version>-x64.AppImage && ./WingMan-<version>-x64.AppImage`,
+or `sudo dpkg -i WingMan-<version>-x64.deb`. You need a PulseAudio/PipeWire
+monitor source enabled.
+
+> Every build is **unsigned** — there is no Authenticode certificate or Apple
+> Developer ID behind this project. Verify the `SHA256SUMS-*.txt` attached to
+> the release, or [build from source](#️-development), if you would rather not
+> take that on trust.
 
 > **Windows Defender / antivirus** may flag the bundled `wingman-server.exe`. This is a false positive from PyInstaller packaging. Add an exclusion for the WingMan install directory if prompted. Test packaged behaviour with `release/win-unpacked/WingMan.exe`, not just `npm run dev`.
 

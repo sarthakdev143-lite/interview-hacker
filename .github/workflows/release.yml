@@ -13,9 +13,22 @@ permissions:
   contents: write
 
 jobs:
-  windows:
-    name: Windows installer
-    runs-on: windows-latest
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One failing platform should not throw away the others' artifacts.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows x64
+          - os: macos-latest
+            label: macOS arm64
+          - os: macos-13
+            label: macOS x64
+          - os: ubuntu-latest
+            label: Linux x64
 
     steps:
       - uses: actions/checkout@v4
@@ -31,54 +44,104 @@ jobs:
         with:
           python-version: '3.11'
 
+      # PortAudio headers for sounddevice, and the FUSE runtime AppImage needs.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev portaudio19-dev libfuse2
+
       - name: Install Node dependencies
         run: npm ci
 
       # build-python.mjs prefers .venv over the system interpreter, so create
-      # one here rather than installing PyInstaller globally. This keeps CI
-      # doing exactly what a contributor's machine does.
+      # one rather than installing PyInstaller globally — this keeps CI doing
+      # what a contributor's machine does. bash resolves the Scripts/ vs bin/
+      # split on all four runners.
       - name: Create Python venv and install dependencies
+        shell: bash
         run: |
           python -m venv .venv
-          .venv\Scripts\python.exe -m pip install --upgrade pip
-          .venv\Scripts\python.exe -m pip install -r python/requirements.txt
-          .venv\Scripts\python.exe -m pip install pyinstaller
+          if [ -f .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install -r python/requirements.txt
+          "$PY" -m pip install pyinstaller
 
-      # Runs verify -> build -> PyInstaller sidecar -> electron-builder.
+      # verify -> build -> PyInstaller sidecar -> electron-builder.
+      #
+      # Each runner builds the sidecar for its own platform and architecture,
+      # which is why this is a matrix rather than one job with a target list:
+      # PyInstaller cannot cross-build, so a cross-built .dmg would ship a
+      # Windows sidecar and fail at launch.
       - name: Package
         run: npm run package
 
       - name: Generate checksums
-        shell: pwsh
+        shell: bash
         run: |
-          $files = Get-ChildItem release/*.exe
-          if (-not $files) { throw "electron-builder produced no installer" }
-          foreach ($f in $files) {
-            $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
-            "$h  $($f.Name)" | Out-File -Append -Encoding ascii release/SHA256SUMS.txt
-          }
-          Get-Content release/SHA256SUMS.txt
+          cd release
+          shopt -s nullglob
+          files=(*.exe *.dmg *.zip *.AppImage *.deb)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::electron-builder produced no installer"
+            exit 1
+          fi
+          # Same digest on every runner; certutil is the Windows equivalent.
+          if command -v sha256sum >/dev/null; then
+            sha256sum "${files[@]}" > "SHA256SUMS-${{ runner.os }}-${{ runner.arch }}.txt"
+          else
+            shasum -a 256 "${files[@]}" > "SHA256SUMS-${{ runner.os }}-${{ runner.arch }}.txt"
+          fi
+          cat "SHA256SUMS-${{ runner.os }}-${{ runner.arch }}.txt"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
+          name: wingman-${{ runner.os }}-${{ runner.arch }}
           path: |
             release/*.exe
-            release/SHA256SUMS.txt
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/SHA256SUMS-*.txt
+          if-no-files-found: error
 
-      - name: Publish release
+  publish:
+    name: Publish draft release
+    needs: build
+    # Publish whatever built, so one broken platform does not block the rest.
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           draft: true
           generate_release_notes: true
-          files: |
-            release/*.exe
-            release/SHA256SUMS.txt
+          files: artifacts/**
           body: |
-            > Releases are **unsigned**. Windows SmartScreen will warn —
-            > choose *More info → Run anyway*, or verify the SHA256 below
-            > against `SHA256SUMS.txt` and build from source if you prefer.
+            > **These builds are unsigned.** Windows SmartScreen will show
+            > "Windows protected your PC" — choose *More info -> Run anyway*.
+            > macOS Gatekeeper will refuse the app outright — right-click the
+            > app and choose *Open*, or run
+            > `xattr -dr com.apple.quarantine /Applications/WingMan.app`.
+            > Verify the SHA256SUMS files below, or build from source.
+
+            | Platform | File |
+            |---|---|
+            | Windows 10/11 | `WingMan-<version>-setup.exe` |
+            | macOS (Apple silicon) | `WingMan-<version>-arm64.dmg` |
+            | macOS (Intel) | `WingMan-<version>-x64.dmg` |
+            | Linux | `WingMan-<version>-x64.AppImage` or `.deb` |
+
+            macOS needs a loopback device such as BlackHole; Linux needs a
+            PulseAudio/PipeWire monitor source. Overlay capture protection is
+            X11-only on Linux and does not work under Wayland.
 
             See [SECURITY.md](SECURITY.md) for what this app does with your
             audio, and the disclaimer in the README before using it.

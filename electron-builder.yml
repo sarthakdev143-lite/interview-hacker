@@ -31,3 +31,58 @@ nsis:
   deleteAppDataOnUninstall: false
   runAfterFinish: true
   perMachine: false
+
+# macOS and Linux are buildable from source and were always missing here, so
+# those users could only run `npm run dev`. Both are unsigned and unnotarised:
+# Gatekeeper will refuse the .dmg until the user right-clicks Open, which is
+# documented in the README rather than papered over.
+#
+# The sidecar in extraResources is a PyInstaller build for the *host* platform,
+# so each of these has to be built on its own runner. Cross-building the
+# Electron shell would silently ship a Windows sidecar inside a .dmg.
+mac:
+  icon: build/icon.png
+  category: public.app-category.productivity
+  # No explicit arch: electron-builder defaults to the host's, which is the
+  # only correct choice while the bundled sidecar is host-built. Apple silicon
+  # and Intel builds therefore come from separate runners.
+  target:
+    - dmg
+    - zip
+  artifactName: WingMan-${version}-${arch}.${ext}
+  # Audio capture goes through a virtual loopback device (BlackHole) rather
+  # than the microphone, but macOS still prompts if any code path touches it,
+  # and a missing usage string is an immediate crash rather than a denial.
+  extendInfo:
+    NSMicrophoneUsageDescription: >-
+      WingMan transcribes system audio from your meeting. Grant access only if
+      you have permission from everyone in the conversation.
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+dmg:
+  artifactName: WingMan-${version}-${arch}.${ext}
+
+linux:
+  icon: build/icon.png
+  category: Utility
+  synopsis: Real-time interview assistant with a capture-protected overlay
+  target:
+    - AppImage
+    - deb
+  artifactName: WingMan-${version}-${arch}.${ext}
+  # Capture protection is X11-only and degrades to nothing under Wayland; the
+  # README says so rather than the app pretending otherwise.
+  desktop:
+    entry:
+      Comment: Streams AI answers to an overlay hidden from screen capture
+
+appImage:
+  artifactName: WingMan-${version}-${arch}.${ext}
+
+deb:
+  # sounddevice binds PortAudio at runtime; without this the app installs and
+  # then fails at import with a message that points nowhere useful.
+  depends:
+    - libasound2
+    - libportaudio2

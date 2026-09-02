@@ -5,6 +5,19 @@ export type OverlayPreset =
   | 'top-left';
 
 /**
+ * The runtime counterpart to `OverlayPreset`, for validating a value that
+ * arrived from the renderer. main.ts previously repeated this list as an inline
+ * literal, which is free to drift from the type above without TypeScript
+ * noticing — the same class of duplication that broke the model IDs.
+ */
+export const OVERLAY_PRESETS: OverlayPreset[] = [
+  'bottom-right',
+  'bottom-left',
+  'top-right',
+  'top-left',
+];
+
+/**
  * `groq` segments audio locally and only uploads speech, so it reuses the Groq
  * key and costs nothing on the free tier. `deepgram` is lower latency but
  * needs a second paid key and bills for connection time.

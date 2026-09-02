@@ -33,7 +33,14 @@ Run one test file, or a single test (use the venv interpreter so `numpy`/deps re
 .venv/Scripts/python.exe python/tests/test_llm.py ResolveModelsTests.test_retired_model_falls_back_and_is_reported
 ```
 
-There is no JS/TS test runner — `verify` is the full gate.
+`verify` is the full gate: typecheck, lint, Vitest, then the Python suite.
+
+Vitest covers only the pure logic on the Electron side — `src/validation.ts`
+(the IPC payload validators) and `src/csp.ts`. main.ts, windowManager.ts and
+pythonServer.ts import `electron` at module scope, so anything worth testing is
+extracted out of them rather than tested through a runtime mock. If you add
+logic to main.ts that deserves a test, move it to a module with no Electron
+import first — that is what `validation.ts` is for.
 
 ## Architecture
 

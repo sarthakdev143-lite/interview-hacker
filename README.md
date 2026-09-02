@@ -223,8 +223,9 @@ npm run dev
 | `npm run dev` | `predev` + concurrently: `dev:renderer` + `dev:main` + `dev:preload` + `dev:electron` |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | `eslint --ext .ts,.tsx .` |
+| `npm test` | `vitest run` — unit tests for `src/validation.ts` and `src/csp.ts` |
 | `npm run test:python` | `node scripts/run-python-tests.mjs` (runs the suite with the project venv, not whatever `python` is on `PATH`) |
-| `npm run verify` | `typecheck` + `lint` + `test:python` (full gate) |
+| `npm run verify` | `typecheck` + `lint` + `test` + `test:python` (full gate) |
 | `npm run build` | Vite builds `renderer` + `main` + `preload` into `dist/` |
 | `npm run package` | `verify` → `build` → PyInstaller sidecar (`scripts/build-python.mjs`) → `electron-builder` → `release/` |
 

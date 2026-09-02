@@ -29,12 +29,10 @@ free tier is enough and needs no credit card.
 ## The gate
 
 ```bash
-npm run verify     # typecheck + lint + python tests
+npm run verify     # typecheck + lint + vitest + python tests
 ```
 
-**Every PR must pass this.** CI runs it on Windows, macOS and Linux. There is no
-JS/TS test runner — `verify` is the whole gate, so TypeScript strictness and the
-ESLint rules are doing real work and are not to be weakened to make a change fit.
+**Every PR must pass this.** CI runs it on Windows, macOS and Linux.
 
 Run a single Python test file, or one test, with the venv interpreter so `numpy`
 and friends resolve:
@@ -43,6 +41,21 @@ and friends resolve:
 .venv/Scripts/python.exe python/tests/test_vad.py
 .venv/Scripts/python.exe python/tests/test_llm.py ResolveModelsTests.test_retired_model_falls_back_and_is_reported
 ```
+
+TypeScript tests run under Vitest:
+
+```bash
+npm test           # once
+npm run test:watch # while working
+```
+
+Their scope is deliberately narrow. `main.ts`, `windowManager.ts` and
+`pythonServer.ts` import `electron` at module scope, so testing them means
+running under Electron or maintaining a mock of the runtime — more cost than
+value for code that is mostly wiring. The parts worth testing are the ones where
+a missed case is a security bug, and those live in modules with no Electron
+import: `src/validation.ts` and `src/csp.ts`. **If you add logic to `main.ts`
+that deserves a test, move it into one of those first.**
 
 ## Architecture in one screen
 
@@ -129,7 +142,8 @@ isolation. Include the numbers in your PR.
 - Every question-detection heuristic in `session_manager.py` is an English
   keyword list. `_needs_classifier()` covers the gap, but native-language
   heuristics would be better.
-- There is no JS/TS test runner at all.
+- The renderer (React components and hooks) has no test coverage — only the
+  main-side validators do.
 
 ## Reporting bugs
 

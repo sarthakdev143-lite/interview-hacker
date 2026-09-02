@@ -17,8 +17,10 @@
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "build:main": "vite build --config vite.main.config.ts",
     "build:preload": "vite build --config vite.preload.config.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:python": "node scripts/run-python-tests.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run test:python",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run test:python",
     "package": "npm run verify && npm run build && node scripts/build-python.mjs && electron-builder --config electron-builder.yml",
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit"
@@ -76,6 +78,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
     "vite": "^5.4.21",
+    "vitest": "^2.1.9",
     "wait-on": "^8.0.3"
   },
   "dependencies": {

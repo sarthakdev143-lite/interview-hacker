@@ -16,19 +16,23 @@ import { pathToFileURL } from 'node:url';
 import { contentSecurityPolicy } from './csp';
 import { getDevServerOrigin } from './devServer';
 import {
+  normalizeExternalUrl,
+  normalizeSettingsUpdates,
+  normalizeStartSessionRequest,
+  requireFiniteNumber,
+} from './validation';
+import {
   PythonServerManager,
   type PythonServerExitInfo,
 } from './pythonServer';
 import { SecureStore } from './secureStore';
 import {
   DEFAULT_ANSWER_MODEL,
-  TRANSCRIPTION_PROVIDERS,
   type AppState,
   type OverlayBounds,
   type OverlayPreset,
   type PublicSettings,
   type StartSessionRequest,
-  type TranscriptionProvider,
 } from './types/contracts';
 import { hardenWebContents, WindowManager } from './windowManager';
 
@@ -130,21 +134,6 @@ function formatError(error: unknown) {
   return String(error);
 }
 
-function normalizeExternalUrl(rawUrl: string) {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new Error('Invalid external URL.');
-  }
-
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error('Only http and https URLs can be opened externally.');
-  }
-
-  return parsed.toString();
-}
-
 function isTrustedRendererUrl(rawUrl: string) {
   // getDevServerOrigin() returns null in a packaged build regardless of the
   // environment, so a planted .env cannot widen what IPC will accept.
@@ -168,49 +157,6 @@ function assertTrustedSender(event: IpcMainInvokeEvent) {
   if (!senderUrl || !isTrustedRendererUrl(senderUrl)) {
     throw new Error('Rejected IPC call from an untrusted renderer.');
   }
-}
-
-function requireFiniteNumber(value: unknown, label: string) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`${label} must be a finite number.`);
-  }
-  return value;
-}
-
-function normalizeSettingsUpdates(
-  updates: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>>,
-) {
-  const normalized: Partial<Omit<PublicSettings, 'apiKeyStored' | 'deepgramApiKeyStored'>> = {};
-  if (updates.language !== undefined) {
-    normalized.language = String(updates.language).trim() || 'en';
-  }
-  if (updates.model !== undefined) {
-    normalized.model = String(updates.model).trim() || DEFAULT_ANSWER_MODEL;
-  }
-  if (updates.overlayPreset !== undefined) {
-    const preset = updates.overlayPreset as OverlayPreset;
-    if (!['bottom-right', 'bottom-left', 'top-right', 'top-left'].includes(preset)) {
-      throw new Error('Invalid overlay preset.');
-    }
-    normalized.overlayPreset = preset;
-  }
-  if (updates.overlayOpacity !== undefined) {
-    normalized.overlayOpacity = Math.max(
-      0.25,
-      Math.min(requireFiniteNumber(updates.overlayOpacity, 'overlayOpacity'), 1),
-    );
-  }
-  if (updates.historyEnabled !== undefined) {
-    normalized.historyEnabled = Boolean(updates.historyEnabled);
-  }
-  if (updates.transcriptionProvider !== undefined) {
-    const provider = updates.transcriptionProvider as TranscriptionProvider;
-    if (!TRANSCRIPTION_PROVIDERS.includes(provider)) {
-      throw new Error('Invalid transcription provider.');
-    }
-    normalized.transcriptionProvider = provider;
-  }
-  return normalized;
 }
 
 // Without a cap, a permanently broken sidecar wrote a stack trace on every
@@ -440,58 +386,6 @@ async function listModels() {
   });
 
   return modelCatalogInFlight;
-}
-
-// Generous for real input, finite for anything else. Mirrors the caps the
-// sidecar applies, so an oversized field is rejected before it is sent.
-const MAX_RESUME_CHARS = 60_000;
-const MAX_CONTEXT_CHARS = 20_000;
-
-function requireString(value: unknown, label: string, maxLength: number) {
-  if (value === undefined || value === null) {
-    return '';
-  }
-  if (typeof value !== 'string') {
-    throw new Error(`${label} must be text.`);
-  }
-  if (value.length > maxLength) {
-    throw new Error(`${label} is too long (limit ${maxLength} characters).`);
-  }
-  return value;
-}
-
-/**
- * `session:start` persists settings and drives window geometry, but it used to
- * do so without any of the validation `app:save-settings` applies — an
- * inconsistent trust boundary for two paths that write the same file.
- */
-function normalizeStartSessionRequest(config: StartSessionRequest): StartSessionRequest {
-  if (!config || typeof config !== 'object') {
-    throw new Error('Invalid session configuration.');
-  }
-
-  const settings = normalizeSettingsUpdates({
-    language: config.language,
-    model: config.model,
-    overlayPreset: config.overlayPreset,
-    overlayOpacity: config.overlayOpacity,
-    historyEnabled: config.historyEnabled,
-    transcriptionProvider: config.transcriptionProvider,
-  });
-
-  return {
-    ...config,
-    resumeText: requireString(config.resumeText, 'Resume text', MAX_RESUME_CHARS),
-    extraContext: requireString(config.extraContext, 'Extra context', MAX_CONTEXT_CHARS),
-    apiKey: requireString(config.apiKey, 'Groq API key', 512),
-    deepgramApiKey: requireString(config.deepgramApiKey, 'Deepgram API key', 512),
-    language: settings.language ?? 'en',
-    model: settings.model ?? DEFAULT_ANSWER_MODEL,
-    overlayPreset: settings.overlayPreset ?? 'bottom-right',
-    overlayOpacity: settings.overlayOpacity ?? 0.95,
-    historyEnabled: settings.historyEnabled ?? false,
-    transcriptionProvider: settings.transcriptionProvider ?? 'groq',
-  };
 }
 
 async function startSession(rawConfig: StartSessionRequest) {

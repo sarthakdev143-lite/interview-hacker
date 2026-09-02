@@ -47,9 +47,9 @@ jobs:
         # try/except, so the tests do not need PortAudio present.
         run: python -m pip install --upgrade pip && pip install -r python/requirements.txt
 
-      # typecheck + lint + python tests. This is the whole gate — there is no
-      # JS/TS test runner. run-python-tests.mjs falls back to the interpreter on
-      # PATH, which is the one setup-python just provisioned.
+      # typecheck + lint + vitest + python tests. This is the whole gate.
+      # run-python-tests.mjs falls back to the interpreter on PATH, which is the
+      # one setup-python just provisioned.
       - name: Verify
         run: npm run verify
 

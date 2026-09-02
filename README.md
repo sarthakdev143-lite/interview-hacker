@@ -9,14 +9,32 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sarthakdev143-lite/interview-hacker/releases"><img src="https://img.shields.io/github/v/release/sarthakdev143-lite/interview-hacker?style=flat-square&color=0ea5e9" alt="Release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/sarthakdev143-lite/interview-hacker?style=flat-square&color=34d399" alt="License" /></a>
-  <img src="https://img.shields.io/badge/platform-Windows-blue?style=flat-square" alt="Platform" />
+  <a href="https://github.com/sarthakdev143-lite/interview-hacker/releases"><img src="https://img.shields.io/github/v/release/sarthakdev143-lite/interview-hacker?include_prereleases&style=flat-square&color=0ea5e9" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-34d399?style=flat-square" alt="License: MIT" /></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%E1%B5%97%20%7C%20Linux%E1%B5%97-blue?style=flat-square" alt="Platform" />
   <img src="https://img.shields.io/badge/electron-41.x-47848F?style=flat-square&logo=electron" alt="Electron" />
   <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python" alt="Python" />
 </p>
 
 ---
+
+> ### ⚠️ Read this before you use it
+>
+> WingMan captures **all system audio**, which in a meeting means everyone in
+> it. Recording or transcribing a conversation without the consent of every
+> participant is illegal in many jurisdictions, and using an AI assistant in a
+> live interview breaches the terms of most interview and meeting platforms —
+> and, usually, the trust of the person on the other end.
+>
+> It is published as a study of a hard real-time problem: sub-second system
+> audio → VAD → transcription → question detection → streamed LLM answer, on a
+> free API tier. Use it to prepare for interviews, to rehearse against your own
+> recordings, as a live captioning and note-taking aid, or as a reference for
+> building low-latency audio pipelines.
+>
+> **You are solely responsible for how you use it.** Know the law where you
+> live, get consent, and read [SECURITY.md](SECURITY.md) for what the app does
+> with your audio and where your data goes.
 
 ## ✨ Features
 
@@ -114,18 +132,46 @@ Answers add roughly $0.001–0.01 per interview depending on model. The dashboar
 | Backend | Python 3.10+, Flask 3, Groq SDK, PyMuPDF, sounddevice / pyaudiowpatch, websocket-client, numpy |
 | Packaging | electron-builder (NSIS), PyInstaller (`python/wingman-server.spec`) |
 
+## 💻 Platform support
+
+| Platform | Install | Audio capture | Overlay hidden from capture |
+|---|---|---|---|
+| **Windows 10/11** | Prebuilt installer | WASAPI loopback via `pyaudiowpatch` — no extra setup | Yes — `WDA_EXCLUDEFROMCAPTURE` |
+| **macOS** | Run from source | Needs a virtual device ([BlackHole](https://github.com/ExistentialAudio/BlackHole) + a Multi-Output Device) | Yes — `setContentProtection` |
+| **Linux** | Run from source | PulseAudio/PipeWire `.monitor` source via `sounddevice` | X11 only, best-effort; **not on Wayland** |
+
+Windows is the only platform with a packaged build and the only one routinely
+tested. The Python and Electron layers are genuinely cross-platform — macOS and
+Linux work from source — but `electron-builder.yml` has no `mac:`/`linux:`
+targets yet. Contributions welcome.
+
+On Windows, health reports `capture_warning` on builds older than `10.0.22621`
+(`python/server.py:health`).
+
 ## 🔑 Prerequisites
 
-- **Windows 10/11** — WASAPI loopback is used for audio capture. Health reports `capture_warning` on builds older than `10.0.22621` (`python/server.py:health`)
 - **Node.js 18+** and **Python 3.10+**
-- A **[Groq API key](https://console.groq.com/keys)** (free tier is enough — this is the only required key)
-- A **[Deepgram key](https://console.deepgram.com/)** — only if you switch the transcription engine to Deepgram in the dashboard
+- A **[Groq API key](https://console.groq.com/keys)** — free tier, **no credit
+  card required**, and this is the only key you need. Sign in with Google or
+  GitHub at [console.groq.com/keys](https://console.groq.com/keys), click
+  *Create API Key*, and copy the `gsk_…` value. It is shown once
+- A **[Deepgram key](https://console.deepgram.com/)** — optional, only if you
+  switch the transcription engine to Deepgram in the dashboard (~9x the cost)
 
 ## 📥 Installation (end users)
 
-1. Download the latest `WingMan-X.X.X-setup.exe` from the [Releases](https://github.com/sarthakdev143-lite/interview-hacker/releases) page
+1. Download the latest `WingMan-<version>-setup.exe` from the
+   [Releases](https://github.com/sarthakdev143-lite/interview-hacker/releases)
+   page
 2. Run the installer — you can choose the install location
 3. Launch **WingMan** from the Start menu or desktop shortcut
+
+> Releases are **unsigned**, so Windows SmartScreen will show
+> *"Windows protected your PC"*. Click **More info → Run anyway**, or build
+> from source if you would rather not.
+
+macOS and Linux users: follow [Development](#️-development) below and run
+`npm run dev`.
 
 > **Windows Defender / antivirus** may flag the bundled `wingman-server.exe`. This is a false positive from PyInstaller packaging. Add an exclusion for the WingMan install directory if prompted. Test packaged behaviour with `release/win-unpacked/WingMan.exe`, not just `npm run dev`.
 
@@ -156,7 +202,9 @@ cd interview-hacker
 # Node deps
 npm install
 
-# Python env (dev spawns .venv/Scripts/python.exe on Windows)
+# Python env — the app spawns this venv directly
+# (.venv/Scripts/python.exe on Windows, .venv/bin/python elsewhere),
+# so install the deps into it rather than globally.
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
@@ -175,7 +223,7 @@ npm run dev
 | `npm run dev` | `predev` + concurrently: `dev:renderer` + `dev:main` + `dev:preload` + `dev:electron` |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | `eslint --ext .ts,.tsx .` |
-| `npm run test:python` | `python -m unittest discover -s python/tests -t python/tests` |
+| `npm run test:python` | `node scripts/run-python-tests.mjs` (runs the suite with the project venv, not whatever `python` is on `PATH`) |
 | `npm run verify` | `typecheck` + `lint` + `test:python` (full gate) |
 | `npm run build` | Vite builds `renderer` + `main` + `preload` into `dist/` |
 | `npm run package` | `verify` → `build` → PyInstaller sidecar (`scripts/build-python.mjs`) → `electron-builder` → `release/` |
@@ -303,9 +351,21 @@ Four edits, in order: `WingmanApi` in `src/types/contracts.ts` → bridge method
 | `WINGMAN_PYTHON_BIN` seems to break a packaged build | Remove it from `.env` when testing packaged builds; dev override only |
 | No interim transcript with Groq | By design — Groq path is batch and only emits finals. Switch to `deepgram` provider for interim results |
 
+## 🤝 Contributing
+
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md)
+for the dev setup, the `npm run verify` gate every change has to pass, and the
+conventions worth knowing before you touch the audio pipeline or IPC layer.
+
+Found a security issue? Please report it privately — see
+[SECURITY.md](SECURITY.md).
+
 ## 📄 License
 
-[MIT with Commons Clause](LICENSE) — Sarthak Parulekar. Free to use, modify, and distribute for non-commercial purposes; the Commons Clause prohibits selling the software or a service substantially derived from it. `package.json` declares `"license": "SEE LICENSE IN LICENSE"` — keep the header on new files that carry one and do not revert it to bare `"MIT"`.
+[MIT](LICENSE) © 2026 Sarthak Parulekar.
+
+Bundled fonts (Space Grotesk, IBM Plex Mono) are licensed separately under the
+SIL Open Font License 1.1 — see [`src/assets/fonts/LICENSE`](src/assets/fonts/LICENSE).
 
 ---
 
